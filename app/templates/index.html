@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Qwen-Image · генерация</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body data-max-images="{{ max_images }}">
+<main class="wrap">
+  <header>
+    <h1>Qwen-Image</h1>
+    <p class="muted">{{ model_id }} · до {{ max_images }} референсных фото · промпт на английском</p>
+  </header>
+
+  <form id="form" class="card">
+    <label class="field">
+      <span>Prompt (English)</span>
+      <textarea name="prompt" rows="4" required
+                placeholder="A cinematic portrait of the person, soft rim light, 85mm lens"></textarea>
+    </label>
+
+    <label class="field">
+      <span>Negative prompt (English, optional)</span>
+      <input type="text" name="negative_prompt" placeholder="blurry, extra fingers, watermark">
+    </label>
+
+    <div class="field">
+      <span>Референсные фото (до {{ max_images }})</span>
+      <input type="file" id="images" name="images" accept="image/*" multiple>
+      <div id="previews" class="previews"></div>
+    </div>
+
+    <div class="grid">
+      <label class="field">
+        <span>Разрешение</span>
+        <select name="resolution">
+          {% for preset in presets %}
+            <option value="{{ preset.key }}">{{ preset.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <label class="field">
+        <span>Шагов</span>
+        <input type="number" name="steps" value="{{ default_steps }}" min="1" max="{{ max_steps }}">
+      </label>
+
+      <label class="field">
+        <span>CFG</span>
+        <input type="number" name="true_cfg_scale" value="{{ default_cfg }}" min="1" max="10" step="0.1">
+      </label>
+
+      <label class="field">
+        <span>Seed (-1 — случайный)</span>
+        <input type="number" name="seed" value="-1" min="-1">
+      </label>
+    </div>
+
+    <button id="submit" type="submit">Сгенерировать</button>
+    <p id="status" class="status" hidden></p>
+  </form>
+
+  <section id="result" class="card" hidden>
+    <h2>Результат</h2>
+    <p id="meta" class="muted"></p>
+    <div id="gallery" class="gallery"></div>
+  </section>
+</main>
+<script src="{{ url_for('static', filename='app.js') }}" defer></script>
+</body>
+</html>

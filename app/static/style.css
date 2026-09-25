@@ -1,0 +1,78 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f6f6f7;
+  --fg: #1b1b1f;
+  --muted: #6b6b76;
+  --card: #ffffff;
+  --border: #dedee4;
+  --accent: #4f46e5;
+  --error: #b42318;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #131316;
+    --fg: #ececf1;
+    --muted: #9a9aa6;
+    --card: #1c1c21;
+    --border: #2e2e36;
+    --accent: #8b87f8;
+    --error: #ff8a7a;
+  }
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+.wrap { max-width: 880px; margin: 0 auto; padding: 32px 20px 64px; }
+header h1 { margin: 0 0 4px; font-size: 24px; }
+.muted { color: var(--muted); font-size: 13px; margin: 0; }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  margin-top: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field > span { font-size: 13px; font-weight: 600; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; }
+
+input, select, textarea, button {
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 11px;
+}
+textarea { resize: vertical; }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+button {
+  background: var(--accent);
+  border-color: transparent;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 11px;
+}
+button:disabled { opacity: .55; cursor: progress; }
+
+.previews { display: flex; flex-wrap: wrap; gap: 8px; }
+.previews img {
+  width: 72px; height: 72px; object-fit: cover;
+  border-radius: 8px; border: 1px solid var(--border);
+}
+.gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.gallery img { width: 100%; border-radius: 10px; border: 1px solid var(--border); }
+
+.status { font-size: 13px; margin: 0; }
+.status.error { color: var(--error); }
