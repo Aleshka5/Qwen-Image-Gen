@@ -35,7 +35,7 @@ Diffusers исходит из того, что все модули пайпла�
 ## Требования
 
 * Podman 4.4+ с работающим GPU-проходом (`nvidia-container-toolkit` + CDI)
-* NVIDIA-драйвер 525+ (проверено на 580.178.04)
+* NVIDIA-драйвер 560+ (проверено на 580.178.04)
 * **~60 GB** свободного диска под веса модели
 * **~48 GB** свободной RAM: текстовый энкодер в fp32 плюс буферы загрузки весов
 
@@ -52,7 +52,7 @@ sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
 Проверка, что Podman видит карту:
 
 ```bash
-podman run --rm --device nvidia.com/gpu=all docker.io/nvidia/cuda:12.1.1-base-ubuntu22.04 nvidia-smi
+podman run --rm --device nvidia.com/gpu=all docker.io/nvidia/cuda:12.6.3-base-ubuntu22.04 nvidia-smi
 ```
 
 Для rootless Podman дополнительно нужно `sudo nvidia-ctk config --set nvidia-container-cli.no-cgroups --in-place`.
@@ -71,7 +71,7 @@ cp .env.example .env
 podman build -t qwen-image-service:latest -f Containerfile .
 ```
 
-Сборка многостадийная: `base` (CUDA + Python) → `ml` (torch 2.5.1+cu121, diffusers, transformers,
+Сборка многостадийная: `base` (CUDA + Python) → `ml` (torch 2.7.1+cu126, diffusers, transformers,
 optimum-quanto — из `requirements-ml.txt`) → `app` (Flask/gunicorn из `requirements.txt` и код).
 Правка кода или веб-зависимостей пересобирает только `app`; стадия `ml` берётся из кеша слоёв.
 Не используйте `--no-cache` без нужды — он заставит заново ставить весь ML-стек (сами колёса

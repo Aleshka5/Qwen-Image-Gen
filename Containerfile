@@ -1,17 +1,20 @@
-# Tesla V100 (SM 7.0): CUDA 12.1 + колёса torch cu121 — последняя связка,
-# в которой sm_70 собирается штатно и есть свежий diffusers.
+# Tesla V100 (SM 7.0). torch 2.7.1 + cu126: колёса cu126 ещё собраны с sm_70,
+# а свежие diffusers/optimum-quanto требуют torch>=2.6 (cu121 заканчивается на 2.5.1).
+# CUDA 13 (cu130) Volta уже не поддерживает — выше cu126/cu128 не поднимать.
+# CUDA-библиотеки torch приносит сам (пакеты nvidia-*), от базового образа нужен
+# только рантайм-минимум. Драйвер хоста — 560+ (проверено на 580).
 #
 # Стадии:
 #   base — CUDA-рантайм + системный Python
 #   ml   — torch + diffusers/transformers/quanto; тяжёлая, пересобирается
-#          только при изменении requirements-ml.txt
+#          только при изменении requirements-ml.txt или версий torch
 #   app  — веб-зависимости и код сервиса; пересобирается за секунды
 #
 # pip-кеш вынесен в cache-mount: он переживает даже `podman build --no-cache`,
-# поэтому колёса torch (~2.5 GB) повторно не скачиваются.
+# поэтому колёса torch (~3 GB) повторно не скачиваются.
 
 # ─────────────────────────────── base ───────────────────────────────
-FROM docker.io/nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 AS base
+FROM docker.io/nvidia/cuda:12.6.3-base-ubuntu22.04 AS base
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -27,22 +30,31 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ──────────────────────────────── ml ────────────────────────────────
 FROM base AS ml
 
-# Constraints не дают pip молча заменить torch на свежий с PyPI (без sm_70 и
-# несовместимый с torchvision 0.20.1 → "operator torchvision::nms does not exist").
-RUN printf 'torch==2.5.1\ntorchvision==0.20.1\n' > /etc/pip-constraints.txt
+ARG TORCH_VERSION=2.7.1
+ARG TORCHVISION_VERSION=0.22.1
+ARG TORCH_INDEX=https://download.pytorch.org/whl/cu126
+
+# Constraints не дают pip молча заменить torch на другой с PyPI: так в образ
+# попал torch 2.14 при torchvision 0.20.1 → "operator torchvision::nms does not exist".
+# Они действуют и в стадии app: попытка сменить torch там тоже уронит сборку.
+RUN printf 'torch==%s\ntorchvision==%s\n' "$TORCH_VERSION" "$TORCHVISION_VERSION" \
+        > /etc/pip-constraints.txt
 
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --index-url https://download.pytorch.org/whl/cu121 \
-        -c /etc/pip-constraints.txt torch torchvision
+    pip install --index-url "$TORCH_INDEX" -c /etc/pip-constraints.txt torch torchvision
 
 COPY requirements-ml.txt /tmp/requirements-ml.txt
-# Если какой-то пакет потребует новее torch — сборка упадёт здесь, а не в рантайме.
+# Если какой-то пакет потребует другой torch — сборка упадёт здесь, а не в рантайме.
+# Проверка sm_70 не требует GPU: список архитектур зашит в сборку torch.
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -c /etc/pip-constraints.txt -r /tmp/requirements-ml.txt \
     && python -c "import torch, torchvision; from torchvision.ops import nms; \
 from transformers import PreTrainedModel; import diffusers, optimum.quanto; \
-assert torch.__version__.startswith('2.5.1'), torch.__version__; \
-print('torch', torch.__version__, 'torchvision', torchvision.__version__, 'diffusers', diffusers.__version__)"
+assert torch.__version__.startswith('$TORCH_VERSION'), torch.__version__; \
+archs = torch._C._cuda_getArchFlags() or ''; \
+assert 'sm_70' in archs, 'torch собран без sm_70 (V100): ' + archs; \
+print('torch', torch.__version__, 'torchvision', torchvision.__version__, \
+'diffusers', diffusers.__version__, 'archs', archs)"
 
 # ──────────────────────────────── app ───────────────────────────────
 FROM ml AS app
@@ -50,8 +62,7 @@ FROM ml AS app
 WORKDIR /srv/app
 COPY requirements.txt .
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -c /etc/pip-constraints.txt -r requirements.txt \
-    && python -c "import torch; assert torch.__version__.startswith('2.5.1'), torch.__version__"
+    pip install -c /etc/pip-constraints.txt -r requirements.txt
 
 # Кеш весов и результаты — на томах, чтобы не тонули вместе с контейнером
 RUN useradd --create-home --uid 1000 service \
