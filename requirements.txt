@@ -1,15 +1,4 @@
-# torch ставится отдельно в Containerfile (колёса cu121, поддерживают sm_70 / V100)
-diffusers>=0.36.0
-transformers>=4.57.0
-accelerate>=1.10.0
-optimum-quanto>=0.2.7
-safetensors>=0.4.5
-sentencepiece>=0.2.0
-protobuf>=4.25.0
-huggingface-hub>=0.35.0
-hf-transfer>=0.1.8
-
+# Веб-сервис: стадия `app` Containerfile. ML-зависимости — в requirements-ml.txt
 Flask>=3.0.3
 gunicorn>=23.0.0
-Pillow>=10.4.0
 python-dotenv>=1.0.1

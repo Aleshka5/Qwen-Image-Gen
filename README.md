@@ -71,6 +71,18 @@ cp .env.example .env
 podman build -t qwen-image-service:latest -f Containerfile .
 ```
 
+Сборка многостадийная: `base` (CUDA + Python) → `ml` (torch 2.5.1+cu121, diffusers, transformers,
+optimum-quanto — из `requirements-ml.txt`) → `app` (Flask/gunicorn из `requirements.txt` и код).
+Правка кода или веб-зависимостей пересобирает только `app`; стадия `ml` берётся из кеша слоёв.
+Не используйте `--no-cache` без нужды — он заставит заново ставить весь ML-стек (сами колёса
+при этом возьмутся из pip-кеша сборки, не из сети).
+
+Проверить только ML-стек, не собирая сервис:
+
+```bash
+podman build --target ml -t qwen-image-ml -f Containerfile .
+```
+
 ### 4. Тома под кеш весов и результаты
 
 Веса скачиваются один раз и должны пережить пересоздание контейнера:
@@ -178,7 +190,7 @@ wsgi.py          точка входа gunicorn
 Проверьте, что VRAM не занята посторонним процессом: `nvidia-smi`.
 
 **`Cannot find class QwenImageEditPlusPipeline` / `KeyError` при загрузке** — установленный diffusers старше модели.
-Пересоберите образ, заменив в `requirements.txt` строку diffusers на
+Пересоберите образ, заменив в `requirements-ml.txt` строку diffusers на
 `git+https://github.com/huggingface/diffusers.git@main`, либо задайте `PIPELINE_CLASS` явно.
 
 **`не принимает изображения на вход`** — выбранный `MODEL_ID` указывает на text-to-image-вариант без
