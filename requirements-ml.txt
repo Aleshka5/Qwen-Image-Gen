@@ -1,6 +1,8 @@
 # ML-стек: ставится в стадии `ml` Containerfile поверх torch 2.7.1+cu126.
 # torch/torchvision здесь не указываются — их фиксирует /etc/pip-constraints.txt.
-diffusers>=0.36.0
+# QwenImage21Pipeline (Qwen/Qwen-Image-2.1) есть только в main — релиз 0.40.0 его не знает.
+# Закреплён коммит main от 2026-09-25; после выхода 0.41.0 вернуть diffusers>=0.41.0.
+diffusers @ https://github.com/huggingface/diffusers/archive/bdc2bea37a36038c44452811610489ea30ede229.tar.gz
 transformers>=4.57.0
 accelerate>=1.10.0
 optimum-quanto>=0.2.7

@@ -126,7 +126,7 @@ class QwenImageGenerator:
 
         pipeline_cls = _resolve_pipeline_class()
         load_kwargs: dict[str, Any] = {
-            "torch_dtype": compute_dtype,
+            "dtype": compute_dtype,
             "low_cpu_mem_usage": True,
         }
         if settings.model_revision:

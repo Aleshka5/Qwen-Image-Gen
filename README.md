@@ -189,9 +189,10 @@ wsgi.py          точка входа gunicorn
 **`CUDA out of memory`** — уменьшите разрешение или число входных фото; затем `MEMORY_MODE=offload`.
 Проверьте, что VRAM не занята посторонним процессом: `nvidia-smi`.
 
-**`Cannot find class QwenImageEditPlusPipeline` / `KeyError` при загрузке** — установленный diffusers старше модели.
-Пересоберите образ, заменив в `requirements-ml.txt` строку diffusers на
-`git+https://github.com/huggingface/diffusers.git@main`, либо задайте `PIPELINE_CLASS` явно.
+**`module diffusers has no attribute QwenImage…Pipeline` / `Cannot find class …` / `KeyError` при загрузке** — установленный diffusers старше модели.
+В `requirements-ml.txt` закрепите diffusers на свежий коммит main:
+`diffusers @ https://github.com/huggingface/diffusers/archive/<sha>.tar.gz` (git в образе не нужен)
+и пересоберите образ. Так уже сделано для `QwenImage21Pipeline` (Qwen-Image-2.1).
 
 **`не принимает изображения на вход`** — выбранный `MODEL_ID` указывает на text-to-image-вариант без
 image-условия. Возьмите edit-ревизию модели или уберите загрузку фото.
