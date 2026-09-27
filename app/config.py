@@ -80,6 +80,9 @@ class Settings:
     request_timeout: int = _int("REQUEST_TIMEOUT", 1800)
     keep_outputs: int = _int("KEEP_OUTPUTS", 200)
     log_level: str = os.getenv("LOG_LEVEL", "INFO").upper()
+    # Куда POST /api/generate складывает удачный прогон. Таймаут только на этот вызов.
+    webstorage_url: str = os.getenv("WEBSTORAGE_URL", "http://app:8000").rstrip("/")
+    webstorage_timeout: float = _float("WEBSTORAGE_TIMEOUT", 60)
 
     @property
     def max_content_length(self) -> int:

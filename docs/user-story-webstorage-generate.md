@@ -1,6 +1,6 @@
 # Change Request: Save each generation to WebStorage
 
-> **Status:** Proposed
+> **Status:** Implemented
 > **Repos:** qwen-image-service (this document). The archive and the history UI live in WebStorage: [`docs/epics/generated-images/init.md`](../../WebStorage/docs/epics/generated-images/init.md).
 > **Caller of this service:** the browser, through the Auth Gateway at `https://image.filenkov.store`.
 > **This service calls:** WebStorage `http://app:8000` on `auth_network`.
@@ -96,12 +96,12 @@ The form shows the image either way. When `saved` is false it shows `storage_err
 
 ## 4. Run
 
-Attach both networks. `AUTH_DOCKER_NETWORK` is the Auth stack’s network (`deploy_auth` when Auth is started from `Auth-Service/deploy`). Do not create it here.
+Attach both networks. `AUTH_DOCKER_NETWORK` is the Auth stack’s network (`deploy_auth_network` when Auth is started from `Auth-Service/deploy`: compose project `deploy`, network key `auth_network`). Do not create it here.
 
 ```bash
 podman run -d --name qwen-image \
   --network qwen_image_gen_network \
-  --network "${AUTH_DOCKER_NETWORK:-deploy_auth}" \
+  --network "${AUTH_DOCKER_NETWORK:-deploy_auth_network}" \
   --device nvidia.com/gpu=all \
   --security-opt=label=disable \
   --env-file .env \

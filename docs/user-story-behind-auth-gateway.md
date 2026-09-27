@@ -19,7 +19,7 @@ The app is one Flask/gunicorn process. `GET /` is the form, `POST /api/generate`
 
 The README's `podman run` publishes `-p 8000:8000`. That would put the GPU UI on the host network, beside the gateway. This request removes that publication.
 
-This service does not read `X-Auth-*`, cookies, or JWTs. The gateway strips client-supplied `X-Auth-*` and only proxies `FAMILY` and `ADMIN` on the `image` role. A request that arrives here is already allowed.
+This service does not read `X-Auth-*`, cookies, or JWTs. A later change is the exception: `POST /api/generate` reads `X-Auth-User-Id` and `X-Auth-Email` only to save the run to WebStorage (`docs/user-story-webstorage-generate.md`). The gateway strips client-supplied `X-Auth-*` and only proxies `FAMILY` and `ADMIN` on the `image` role. A request that arrives here is already allowed.
 
 ## 2. Requested run
 

@@ -12,10 +12,22 @@ Flask-сервис генерации изображений на базе [Qwen
 Сеть создаёт этот репозиторий; Auth-Service подключается к ней из своего compose как `external: true`.
 
 Пускать или нет — решает gateway: роль `image` (`FAMILY` или `ADMIN` в User-Service).
-Входящие от клиента `X-Auth-*` gateway вырезает. В самом сервисе нет логина, сессий и проверки ролей;
-заголовки `X-Auth-*`, cookies и JWT он не читает. Запрос, дошедший сюда, уже разрешён.
+Входящие от клиента `X-Auth-*` gateway вырезает. В самом сервисе нет логина, сессий, проверки ролей и проверки JWT.
+Исключение — `POST /api/generate`: `X-Auth-User-Id` и `X-Auth-Email` читаются только чтобы подписать сохранение в WebStorage.
+Маршруты `GET` эти заголовки не используют. Запрос, дошедший сюда, уже разрешён.
 Поэтому граница доверия — сама сеть: в `qwen_image_gen_network` должны быть только gateway и `qwen-image`.
-Любой другой контейнер в этой сети обходит проверку роли.
+WebStorage в `qwen_image_gen_network` не входит. Любой другой контейнер в этой сети обходит проверку роли.
+
+Чтобы после удачной генерации вызвать WebStorage, этот контейнер дополнительно подключается к сети Auth.
+`AUTH_DOCKER_NETWORK` — сеть стека Auth (`deploy_auth_network`, если Auth запущен из `Auth-Service/deploy`).
+Её этот репозиторий не создаёт: стек Auth уже должен быть поднят.
+На этой сети контейнер остаётся с именем `qwen-image` и ходит на DNS-имя `app` — так там называется WebStorage.
+Переименовывать этот контейнер в `app` нельзя.
+
+После успешной генерации процесс делает `POST` на `WEBSTORAGE_URL` (по умолчанию `http://app:8000`) по пути `/api/generated`.
+Он передаёт `X-Auth-User-Id` и, если заголовок был во входящем запросе, `X-Auth-Email`.
+`Cookie`, `Authorization` и `X-Auth-Role` не отправляются. JWT этот сервис не проверяет.
+В `.env` для адреса архива задаётся `WEBSTORAGE_URL=http://app:8000`.
 
 `GET /healthz` в приложении анонимный. Gateway отдаёт этот путь без роли — для проб оператора, всё остальное требует роль `image`.
 
@@ -118,12 +130,25 @@ podman volume create qwen-hf-cache && podman volume create qwen-outputs
 podman network create qwen_image_gen_network
 ```
 
+Сеть Auth (`AUTH_DOCKER_NETWORK`, при запуске из `Auth-Service/deploy` это `deploy_auth_network`) здесь не создаётся.
+Перед запуском стек Auth уже должен быть поднят: на этой сети WebStorage отвечает как `app`.
+
 ### 5. Запустить
 
 Порт 8000 на хост не публикуется — см. [«Сеть и доступ»](#сеть-и-доступ).
+Контейнер подключается к обеим сетям: к `qwen_image_gen_network` и к сети Auth.
 
 ```bash
-podman run -d --name qwen-image --network qwen_image_gen_network --device nvidia.com/gpu=all --security-opt=label=disable --env-file .env -v qwen-hf-cache:/data/huggingface -v qwen-outputs:/data/outputs --shm-size=8g --memory=64g qwen-image-service:latest
+podman run -d --name qwen-image \
+  --network qwen_image_gen_network \
+  --network "${AUTH_DOCKER_NETWORK:-deploy_auth_network}" \
+  --device nvidia.com/gpu=all \
+  --security-opt=label=disable \
+  --env-file .env \
+  -v qwen-hf-cache:/data/huggingface \
+  -v qwen-outputs:/data/outputs \
+  --shm-size=8g --memory=64g \
+  qwen-image-service:latest
 ```
 
 Первый старт скачивает ~33 GB весов и квантует DiT — это десятки минут. Прогресс видно в логах:
@@ -152,15 +177,17 @@ podman port qwen-image; ss -ltn | grep :8000
 
 ### Systemd-юнит (автозапуск)
 
-Юнит пересоздаёт контейнер с теми же флагами, включая `--network`. Сеть `qwen_image_gen_network` должна существовать до старта юнита (создаётся один раз командой из шага 4).
+Файл `deploy/qwen-image.container` — Quadlet. При каждом старте, в том числе после перезагрузки, он поднимает контейнер сразу в двух сетях: `qwen_image_gen_network` и `deploy_auth_network`. Обе сети должны существовать до старта юнита. Первую создаёт шаг 4. Вторую создаёт стек Auth; этот репозиторий её не создаёт.
+
+`podman generate systemd --new` не используется: он повторяет исходный `podman run` и теряет вторую сеть, если контейнер когда-то создали только с `qwen_image_gen_network`.
 
 ```bash
-podman generate systemd --name qwen-image --new --files --restart-policy=always
+mkdir -p ~/.config/containers/systemd
+cp deploy/qwen-image.container ~/.config/containers/systemd/
+systemctl --user daemon-reload
 ```
 
-```bash
-mkdir -p ~/.config/systemd/user && mv container-qwen-image.service ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user enable --now container-qwen-image
-```
+Quadlet сам попадает в `default.target` (`WantedBy`). Отдельный `systemctl enable` для такого юнита не нужен. `daemon-reload` не пересоздаёт уже запущенный контейнер. Следующий старт (загрузка машины или `systemctl --user start qwen-image.service`) поднимает его в обеих сетях. `start` сейчас остановит текущий процесс и заново загрузит модель.
 
 ---
 
@@ -185,7 +212,7 @@ mkdir -p ~/.config/systemd/user && mv container-qwen-image.service ~/.config/sys
 podman run --rm --network qwen_image_gen_network --security-opt=label=disable -v "$PWD":/work:ro -w /work docker.io/curlimages/curl -X POST http://qwen-image:8000/api/generate -F "prompt=A cinematic portrait of the person, soft rim light, 85mm lens" -F "resolution=2048x2048" -F "steps=40" -F "true_cfg_scale=1" -F "images=@face1.jpg" -F "images=@face2.jpg" > result.json
 ```
 
-Ответ:
+Ответ после удачного сохранения в WebStorage:
 
 ```json
 {
@@ -193,11 +220,15 @@ podman run --rm --network qwen_image_gen_network --security-opt=label=disable -v
   "duration": 96.4,
   "width": 2048,
   "height": 2048,
-  "images": [{"name": "20260922-124332-3b47ec64.png", "url": "/outputs/20260922-124332-3b47ec64.png"}]
+  "images": [{"name": "20260922-124332-3b47ec64.png", "url": "/outputs/20260922-124332-3b47ec64.png"}],
+  "saved": true,
+  "storage_id": "20260927T115012Z-3b47ec64"
 }
 ```
 
-Ошибки валидации — `400`, недоступность или OOM пайплайна — `503`, превышение размера загрузки — `413`.
+Если `X-Auth-User-Id` не UUID, или WebStorage ответил ошибкой, оборвался по таймауту или недоступен, генерация всё равно `200`: `saved` равен `false`, в `storage_error` текст ошибки, `storage_id` нет, а `images` по-прежнему указывают на локальный PNG.
+
+Ошибки валидации — `400`, недоступность или OOM пайплайна — `503`, превышение размера загрузки — `413`. В этих случаях WebStorage не вызывается.
 
 ### `POST /api/customize` — `multipart/form-data`
 

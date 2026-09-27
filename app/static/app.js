@@ -8,6 +8,7 @@
   const result = document.getElementById("result");
   const gallery = document.getElementById("gallery");
   const meta = document.getElementById("meta");
+  const storageError = document.getElementById("storage-error");
 
   const MAX_IMAGES = Number(document.body.dataset.maxImages || 10);
   /** @type {{file: File, url: string}[]} */
@@ -203,6 +204,11 @@
       });
 
       meta.textContent = `${payload.width}×${payload.height} · seed ${payload.seed} · ${payload.duration} с на GPU`;
+      const notSaved = payload.saved === false && typeof payload.storage_error === "string"
+        ? payload.storage_error
+        : "";
+      storageError.textContent = notSaved;
+      storageError.hidden = !notSaved;
       result.hidden = false;
       setStatus(`Готово за ${((performance.now() - started) / 1000).toFixed(1)} с`);
     } catch (error) {

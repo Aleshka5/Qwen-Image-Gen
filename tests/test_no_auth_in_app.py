@@ -1,7 +1,12 @@
-"""Граница доверия: решение «пускать или нет» принимает Auth Gateway, приложение auth не содержит."""
+"""Граница доверия: решение «пускать или нет» принимает Auth Gateway, приложение auth не содержит.
+
+Исключение — POST /api/generate: читает только X-Auth-User-Id и X-Auth-Email,
+чтобы сохранить прогон в WebStorage. Остальные заголовки и остальные маршруты по-прежнему не читают личность.
+"""
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -11,6 +16,8 @@ ROOT = Path(__file__).resolve().parent.parent
 
 SPOOFED_HEADERS = {
     "X-Auth-User": "mallory",
+    "X-Auth-User-Id": "not-a-uuid",
+    "X-Auth-Email": "mallory@example.com",
     "X-Auth-Role": "ADMIN",
     "X-Auth-Roles": "ADMIN,FAMILY",
     "Authorization": "Bearer x",
@@ -48,11 +55,44 @@ def _send(app, method, path, data, *, spoof):
     return client.open(path, method=method, data=data, headers=headers)
 
 
+@pytest.fixture(autouse=True)
+def block_webstorage(monkeypatch):
+    """Спойф и маршруты без UUID не должны открывать сокет к Storage."""
+
+    def urlopen(*_args, **_kwargs):
+        raise AssertionError("WebStorage must not be called")
+
+    monkeypatch.setattr("app.webstorage.urlopen", urlopen)
+
+
 @pytest.mark.parametrize(("method", "path", "data"), REQUESTS)
 def test_spoofed_auth_headers_and_cookies_are_ignored(app, method, path, data):
     plain = _send(app, method, path, data, spoof=False)
     spoofed = _send(app, method, path, data, spoof=True)
     assert _normalized(plain) == _normalized(spoofed)
+    if path == "/api/generate" and plain.status_code == 200:
+        for response in (plain, spoofed):
+            body = response.get_json()
+            assert body["saved"] is False
+            assert body["storage_error"] == "not saved: no user id"
+            assert "storage_id" not in body
+            assert body["images"]
+        assert _png_pixels(app, plain) == _png_pixels(app, spoofed)
+
+
+def _png_pixels(app, response):
+    from io import BytesIO
+
+    from PIL import Image
+
+    client = app.test_client()
+    pixels = []
+    for image in response.get_json()["images"]:
+        served = client.get(image["url"])
+        assert served.status_code == 200
+        assert served.mimetype == "image/png"
+        pixels.append(Image.open(BytesIO(served.data)).tobytes())
+    return pixels
 
 
 @pytest.mark.parametrize(("method", "path", "data"), REQUESTS)
@@ -82,16 +122,24 @@ def test_auth_paths_are_404(client, path):
     assert client.get(path).status_code == 404
 
 
+# Эти следы запрещены в любом файле app/, включая путь сохранения генерации.
 FORBIDDEN_IN_APP = [
-    re.compile(r"x-auth", re.IGNORECASE),
     re.compile(r"jwt", re.IGNORECASE),
+    re.compile(r"authorization", re.IGNORECASE),
+    re.compile(r"x-auth-role", re.IGNORECASE),
     re.compile(r"request\.cookies"),
-    re.compile(r"request\.headers"),
+    re.compile(r"(?<![\w.])request\.headers"),  # уточняется ниже: только generate
+    re.compile(r"\bcookie\b", re.IGNORECASE),
     re.compile(r"\bsession\["),
     re.compile(r"set_cookie"),
     re.compile(r"flask_login|login_required", re.IGNORECASE),
     re.compile(r"from flask import[^\n]*\bsession\b"),
 ]
+
+# Чтение и пересылка только этих двух имён. Любой другой X-Auth-* роняет сьют.
+_ALLOWED_IDENTITY = ("X-Auth-User-Id", "X-Auth-Email")
+_X_AUTH = re.compile(r"x-auth[a-z0-9_-]*", re.IGNORECASE)
+_FLASK_HEADERS = re.compile(r"(?<![\w.])request\.headers")
 
 
 def _app_sources():
@@ -108,13 +156,129 @@ def test_app_sources_exist():
 
 @pytest.mark.parametrize("pattern", FORBIDDEN_IN_APP, ids=lambda p: p.pattern)
 def test_app_contains_no_auth_code(pattern):
-    hits = [
-        f"{path.relative_to(ROOT)}:{lineno}: {line.strip()}"
-        for path in _app_sources()
-        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
-        if pattern.search(line)
-    ]
+    """request.headers допускается только внутри api_generate и только для двух заголовков."""
+    generate_lines = _api_generate_lines()
+    hits = []
+    for path in _app_sources():
+        rel = path.relative_to(ROOT)
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if pattern.pattern.startswith(r"(?<![\w.])request\.headers"):
+                if not _FLASK_HEADERS.search(line):
+                    continue
+                allowed = (
+                    rel.name == "routes.py"
+                    and lineno in generate_lines
+                    and _identity_tokens(line)
+                    and set(_identity_tokens(line)) <= set(_ALLOWED_IDENTITY)
+                )
+                if not allowed:
+                    hits.append(f"{rel}:{lineno}: {line.strip()}")
+                continue
+            if pattern.search(line):
+                hits.append(f"{rel}:{lineno}: {line.strip()}")
     assert hits == []
+
+
+def test_identity_headers_only_on_generate_save_path():
+    """X-Auth-User-Id и X-Auth-Email — только чтение в api_generate и пересылка в webstorage."""
+    generate_lines = _api_generate_lines()
+    violations = []
+    for path in _app_sources():
+        rel = path.relative_to(ROOT)
+        text = path.read_text(encoding="utf-8")
+        if path.suffix != ".py":
+            if _X_AUTH.search(text) or _FLASK_HEADERS.search(text):
+                violations.append(f"{rel}: identity markup outside Python")
+            continue
+        for lineno, line in enumerate(text.splitlines(), 1):
+            tokens = _identity_tokens(line)
+            header_read = _FLASK_HEADERS.search(line) is not None
+            if not tokens and not header_read:
+                continue
+            if any(token not in _ALLOWED_IDENTITY for token in tokens):
+                violations.append(f"{rel}:{lineno}: forbidden identity token")
+                continue
+            if rel.name == "routes.py":
+                if lineno not in generate_lines or (header_read and not tokens):
+                    violations.append(f"{rel}:{lineno}: identity outside api_generate")
+            elif rel.name != "webstorage.py" or header_read:
+                violations.append(f"{rel}:{lineno}: identity outside the save client")
+        if path.suffix == ".py":
+            violations.extend(_ast_identity_violations(rel, text, generate_lines))
+    assert violations == []
+
+
+def _identity_tokens(line: str) -> list[str]:
+    found = []
+    for token in _X_AUTH.findall(line):
+        canonical = next((name for name in _ALLOWED_IDENTITY if name.lower() == token.lower()), token)
+        found.append(canonical if canonical in _ALLOWED_IDENTITY else token)
+    return found
+
+
+def _api_generate_lines() -> range:
+    source = (ROOT / "app" / "routes.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    generate = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "api_generate"
+    )
+    return range(generate.lineno, (generate.end_lineno or generate.lineno) + 1)
+
+
+def _ast_identity_violations(rel: Path, source: str, generate_lines: range) -> list[str]:
+    """Чтение flask-заголовков — только .get двух имён внутри api_generate. Вызов save — только оттуда."""
+    tree = ast.parse(source)
+    parents: dict[ast.AST, ast.AST] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+    violations = []
+    for node in ast.walk(tree):
+        if _is_flask_headers(node):
+            call = parents.get(parents.get(node))
+            header_name = _get_header_name(call) if isinstance(call, ast.Call) else None
+            if (
+                rel.name != "routes.py"
+                or node.lineno not in generate_lines
+                or header_name not in _ALLOWED_IDENTITY
+            ):
+                violations.append(f"{rel}:{node.lineno}: request.headers outside the generate read")
+        if isinstance(node, ast.Call) and _call_name(node) == "save_generated":
+            if rel.name != "routes.py" or node.lineno not in generate_lines:
+                violations.append(f"{rel}:{node.lineno}: save_generated outside api_generate")
+    return violations
+
+
+def _is_flask_headers(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "headers"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "request"
+    )
+
+
+def _get_header_name(call: ast.Call | None) -> str | None:
+    if call is None or not call.args:
+        return None
+    func = call.func
+    if not isinstance(func, ast.Attribute) or func.attr != "get":
+        return None
+    arg = call.args[0]
+    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+        return arg.value
+    return None
+
+
+def _call_name(node: ast.Call) -> str | None:
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
 
 
 AUTH_PACKAGES = {

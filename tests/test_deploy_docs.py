@@ -1,4 +1,4 @@
-"""README и Containerfile: запуск за Auth Gateway в сети qwen_image_gen_network без публикации порта."""
+"""README и Containerfile: запуск за Auth Gateway в двух сетях без публикации порта."""
 
 from __future__ import annotations
 
@@ -59,7 +59,11 @@ def test_run_uses_container_name_qwen_image(run_commands):
 
 def test_run_attaches_network(run_commands):
     for tokens in run_commands:
-        assert _option(tokens, "--network") == [NETWORK]
+        networks = _option(tokens, "--network")
+        assert NETWORK in networks
+        auth = [value for value in networks if value != NETWORK]
+        assert len(auth) == 1
+        assert "deploy_auth_network" in auth[0] or "${AUTH_DOCKER_NETWORK:-deploy_auth_network}" in auth[0]
 
 
 def test_run_does_not_publish_ports(run_commands):
@@ -97,6 +101,23 @@ def test_readme_creates_network():
 )
 def test_readme_mentions_gateway_topology(text):
     assert text in README
+
+
+def test_quadlet_attaches_auth_network_on_start():
+    quadlet = (ROOT / "deploy" / "qwen-image.container").read_text(encoding="utf-8")
+    assert "Network=qwen_image_gen_network" in quadlet
+    assert "Network=deploy_auth_network" in quadlet
+    assert "ContainerName=qwen-image" in quadlet
+    assert "PublishPort" not in quadlet
+    assert "deploy/qwen-image.container" in README
+    assert "systemctl --user daemon-reload" in README
+
+
+def test_readme_states_webstorage_save_and_network_boundary():
+    assert "WEBSTORAGE_URL" in README or "http://app:8000" in README
+    assert "X-Auth-User-Id" in README
+    assert "только gateway и `qwen-image`" in README
+    assert re.search(r"WebStorage в `qwen_image_gen_network` не входит", README)
 
 
 def test_readme_has_no_host_port_in_commands():

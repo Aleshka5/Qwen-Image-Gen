@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import logging
 import random
 import re
@@ -12,6 +13,7 @@ from flask import Blueprint, jsonify, render_template, request, send_file, url_f
 from .config import settings
 from .generator import GenerationRequest, PipelineError, generator
 from .logbuf import live_logs
+from .webstorage import StorageError, save_generated
 from .imaging import (
     RESOLUTION_PRESETS,
     ValidationError,
@@ -29,6 +31,10 @@ bp = Blueprint("web", __name__)
 _CYRILLIC = re.compile(r"[Ѐ-ӿ]")
 _MAX_PROMPT_CHARS = 2000
 _SEED_MAX = 2**31 - 1
+_USER_ID = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+_NOT_SAVED_NO_USER = "not saved: no user id"
 
 
 def _clean_prompt(raw: str | None, *, field: str, required: bool) -> str:
@@ -62,6 +68,24 @@ def _parse_seed(raw: str | None) -> int:
     if not raw or raw == "-1":
         return secrets.randbelow(_SEED_MAX)
     return _parse_int(raw, field="seed", default=0, low=0, high=_SEED_MAX)
+
+
+def _valid_user_id(raw: str | None) -> str | None:
+    value = (raw or "").strip()
+    if _USER_ID.fullmatch(value):
+        return value
+    return None
+
+
+def _optional_text(raw: str | None) -> str | None:
+    value = (raw or "").strip()
+    return value or None
+
+
+def _png_bytes(image) -> bytes:
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    return buf.getvalue()
 
 
 def _parse_cfg(raw: str | None) -> float:
@@ -171,12 +195,38 @@ def api_generate():
     )
 
     names = save_outputs(result.images)
+    # Идентификатор читается только здесь. Любое другое значение — «нет пользователя».
+    user_id = _valid_user_id(request.headers.get("X-Auth-User-Id"))
+    if user_id is None:
+        stored = {"saved": False, "storage_error": _NOT_SAVED_NO_USER}
+    else:
+        try:
+            storage_id = save_generated(
+                user_id=user_id,
+                email=_optional_text(request.headers.get("X-Auth-Email")),
+                prompt=prompt,
+                negative_prompt=negative,
+                seed=result.seed,
+                steps=steps,
+                true_cfg_scale=cfg,
+                width=width,
+                height=height,
+                duration=result.duration,
+                images=[_png_bytes(image) for image in images],
+                result_png=output_path(names[0]).read_bytes(),
+                result_name=names[0],
+            )
+        except StorageError as exc:
+            stored = {"saved": False, "storage_error": exc.reason}
+        else:
+            stored = {"saved": True, "storage_id": storage_id}
     return jsonify(
         seed=result.seed,
         duration=round(result.duration, 2),
         width=width,
         height=height,
         images=[{"name": n, "url": url_for("web.output", name=n)} for n in names],
+        **stored,
     )
 
 
