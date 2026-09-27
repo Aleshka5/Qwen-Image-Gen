@@ -41,18 +41,30 @@ class Settings:
     memory_mode: str = os.getenv("MEMORY_MODE", "int8").strip().lower()
     device: str = os.getenv("DEVICE", "cuda")
     text_encoder_device: str = os.getenv("TEXT_ENCODER_DEVICE", "cpu")
-    text_encoder_dtype: str = os.getenv("TEXT_ENCODER_DTYPE", "float32")
-    attention_backend: str = os.getenv("ATTENTION_BACKEND", "sdpa")
+    text_encoder_dtype: str = os.getenv("TEXT_ENCODER_DTYPE", "float16")
+    # Часть Qwen3-VL, которая всё же живёт в VRAM (в fp16): vision-башня и первые N из 36 слоёв.
+    # Слой — ~0.4 GB VRAM вместо ~0.4 GB RAM в fp16 (~0.8 GB, если остаток в fp32).
+    # 24 слоя покрывают DeepStack (8/16/24) и снимают с RAM большую часть энкодера.
+    text_encoder_gpu_layers: int = _int("TEXT_ENCODER_GPU_LAYERS", 24)
+    text_encoder_gpu_vision: bool = _bool("TEXT_ENCODER_GPU_VISION", True)
+    # native — PyTorch SDPA. Имя "sdpa" принимается как алиас (см. generator).
+    attention_backend: str = os.getenv("ATTENTION_BACKEND", "native")
+    # Запасной путь, если полный кадр не влез даже после выноса DiT в RAM.
     vae_tiling: bool = _bool("VAE_TILING", True)
     vae_slicing: bool = _bool("VAE_SLICING", True)
+    # Сторона тайла decode в пикселях. Кратность сжатию VAE выравнивается в generator.
+    vae_tile_size: int = _int("VAE_TILE_SIZE", 1536)
     preload_model: bool = _bool("PRELOAD_MODEL", True)
 
     # --- параметры генерации --------------------------------------------
-    default_steps: int = _int("DEFAULT_STEPS", 30)
+    default_steps: int = _int("DEFAULT_STEPS", 40)
     max_steps: int = _int("MAX_STEPS", 60)
-    default_true_cfg_scale: float = _float("DEFAULT_TRUE_CFG_SCALE", 4.0)
-    default_negative_prompt: str = os.getenv("DEFAULT_NEGATIVE_PROMPT", " ")
-    max_side: int = _int("MAX_SIDE", 1664)
+    # 2.1 сэмплируется без classifier-free guidance. Значение > 1 включает её
+    # и удваивает KV-кэш — на 32 GB это легко приводит к OOM при нескольких референсах.
+    default_true_cfg_scale: float = _float("DEFAULT_TRUE_CFG_SCALE", 1.0)
+    default_negative_prompt: str = os.getenv("DEFAULT_NEGATIVE_PROMPT", "")
+    # Нативная 16:9 у 2.1 — 2752×1536. Сторона должна быть кратна 32.
+    max_side: int = _int("MAX_SIDE", 2752)
     min_side: int = _int("MIN_SIDE", 512)
 
     # --- входные изображения --------------------------------------------

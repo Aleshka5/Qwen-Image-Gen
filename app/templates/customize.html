@@ -3,25 +3,25 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Qwen-Image · генерация</title>
+  <title>Qwen-Image · кастомизация</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-<body data-max-images="{{ max_images }}">
+<body>
 <main class="wrap">
   <header>
     <h1>Qwen-Image</h1>
-    <p class="muted">{{ model_id }} · до {{ max_images }} референсных фото · промпт на английском</p>
+    <p class="muted">{{ model_id }} · одно фото · результат того же размера · промпт на английском</p>
     <nav class="pages">
-      <a href="{{ url_for('web.index') }}" aria-current="page">Генерация</a>
-      <a href="{{ url_for('web.customize') }}">Кастомизация</a>
+      <a href="{{ url_for('web.index') }}">Генерация</a>
+      <a href="{{ url_for('web.customize') }}" aria-current="page">Кастомизация</a>
     </nav>
   </header>
 
   <form id="form" class="card">
     <label class="field">
-      <span>Prompt (English)</span>
-      <textarea name="prompt" rows="4" required
-                placeholder="A cinematic portrait of the person, soft rim light, 85mm lens"></textarea>
+      <span>System prompt (English)</span>
+      <textarea name="system_prompt" rows="4" required
+                placeholder="Remove the lamp behind the person, keep the face, clothes, and framing"></textarea>
     </label>
 
     <label class="field">
@@ -30,22 +30,13 @@
     </label>
 
     <div class="field">
-      <span>Референсные фото (до {{ max_images }})</span>
-      <input type="file" id="images" name="images" accept="image/*" multiple>
-      <p class="muted">Порядок можно менять стрелками или перетаскиванием. Это image 1, image 2, … в промпте.</p>
+      <span>Референсное фото</span>
+      <input type="file" id="image" name="image" accept="image/*" required>
+      <p class="muted">Правки из system prompt лягут на это фото. На выходе будет тот же размер, что у файла.</p>
       <div id="previews" class="previews"></div>
     </div>
 
     <div class="grid">
-      <label class="field">
-        <span>Разрешение</span>
-        <select name="resolution">
-          {% for preset in presets %}
-            <option value="{{ preset.key }}">{{ preset.label }}</option>
-          {% endfor %}
-        </select>
-      </label>
-
       <label class="field">
         <span>Шагов</span>
         <input type="number" name="steps" value="{{ default_steps }}" min="1" max="{{ max_steps }}">
@@ -62,7 +53,7 @@
       </label>
     </div>
 
-    <button id="submit" type="submit">Сгенерировать</button>
+    <button id="submit" type="submit">Поправить</button>
     <p id="status" class="status" hidden></p>
     <pre id="logs" class="logs" hidden></pre>
   </form>
@@ -73,6 +64,6 @@
     <div id="gallery" class="gallery"></div>
   </section>
 </main>
-<script src="{{ url_for('static', filename='app.js') }}" defer></script>
+<script src="{{ url_for('static', filename='customize.js') }}" defer></script>
 </body>
 </html>

@@ -30,6 +30,9 @@ body {
 .wrap { max-width: 880px; margin: 0 auto; padding: 32px 20px 64px; }
 header h1 { margin: 0 0 4px; font-size: 24px; }
 .muted { color: var(--muted); font-size: 13px; margin: 0; }
+.pages { display: flex; gap: 16px; margin-top: 12px; }
+.pages a { color: inherit; font-weight: 600; text-decoration: none; }
+.pages a[aria-current="page"] { color: var(--accent); }
 
 .card {
   background: var(--card);
@@ -66,13 +69,73 @@ button {
 }
 button:disabled { opacity: .55; cursor: progress; }
 
-.previews { display: flex; flex-wrap: wrap; gap: 8px; }
+.previews { display: flex; flex-wrap: wrap; gap: 10px; }
+.preview {
+  position: relative;
+  margin: 0;
+  width: 84px;
+  cursor: grab;
+}
+.preview.dragging { opacity: 0.45; }
+.preview.drag-over img { outline: 2px solid var(--accent); outline-offset: 1px; }
+.preview .ref-index {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
+.preview figcaption {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+}
+.preview-moves {
+  display: flex;
+  justify-content: center;
+  gap: 4px;
+  margin-top: 4px;
+}
+.preview-move {
+  width: 32px;
+  height: 24px;
+  padding: 0;
+  background: var(--bg);
+  color: inherit;
+  font-size: 13px;
+  line-height: 1;
+}
 .previews img {
-  width: 72px; height: 72px; object-fit: cover;
+  width: 84px; height: 84px; object-fit: cover;
   border-radius: 8px; border: 1px solid var(--border);
+  display: block;
+  pointer-events: none;
 }
 .gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
 .gallery img { width: 100%; border-radius: 10px; border: 1px solid var(--border); }
 
 .status { font-size: 13px; margin: 0; }
 .status.error { color: var(--error); }
+.logs {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--muted);
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.logs .log-warn { color: var(--error); }

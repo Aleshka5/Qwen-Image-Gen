@@ -17,7 +17,7 @@ from .config import settings
 log = logging.getLogger(__name__)
 
 ALLOWED_FORMATS = {"JPEG", "PNG", "WEBP", "BMP"}
-_ALIGN = 16  # сторона кратна 16 — требование VAE/патчификатора
+_ALIGN = 32  # VAE 2.1 сжимает в 16 раз, пайплайн требует кратность vae_scale_factor * 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,15 +28,17 @@ class ResolutionPreset:
     height: int
 
 
+# Нативные размеры Qwen-Image-2.1. Все стороны кратны 32.
+# 1024 — запас по VRAM на V100, когда 2K с несколькими референсами не влезает.
 RESOLUTION_PRESETS: tuple[ResolutionPreset, ...] = (
-    ResolutionPreset("1328x1328", "1:1 — 1328×1328", 1328, 1328),
-    ResolutionPreset("1664x928", "16:9 — 1664×928", 1664, 928),
-    ResolutionPreset("928x1664", "9:16 — 928×1664", 928, 1664),
-    ResolutionPreset("1472x1140", "4:3 — 1472×1140", 1472, 1140),
-    ResolutionPreset("1140x1472", "3:4 — 1140×1472", 1140, 1472),
+    ResolutionPreset("2048x2048", "1:1 — 2048×2048", 2048, 2048),
+    ResolutionPreset("2400x1792", "4:3 — 2400×1792", 2400, 1792),
+    ResolutionPreset("1792x2400", "3:4 — 1792×2400", 1792, 2400),
+    ResolutionPreset("2528x1696", "3:2 — 2528×1696", 2528, 1696),
+    ResolutionPreset("1696x2528", "2:3 — 1696×2528", 1696, 2528),
+    ResolutionPreset("2752x1536", "16:9 — 2752×1536", 2752, 1536),
+    ResolutionPreset("1536x2752", "9:16 — 1536×2752", 1536, 2752),
     ResolutionPreset("1024x1024", "1:1 — 1024×1024 (экономно)", 1024, 1024),
-    ResolutionPreset("1280x720", "16:9 — 1280×720 (экономно)", 1280, 720),
-    ResolutionPreset("720x1280", "9:16 — 720×1280 (экономно)", 720, 1280),
 )
 
 _PRESETS_BY_KEY = {preset.key: preset for preset in RESOLUTION_PRESETS}
@@ -77,31 +79,129 @@ def parse_resolution(raw: str | None) -> tuple[int, int]:
     return align(width), align(height)
 
 
+def _read_rgb(storage: FileStorage, *, index: int) -> Image.Image:
+    """Декодирует загрузку в RGB с учётом EXIF. Размер здесь не меняется."""
+    try:
+        image = Image.open(storage.stream)
+        image.load()
+    except (UnidentifiedImageError, OSError) as exc:
+        raise ValidationError(f"Файл #{index} ({storage.filename}) не читается как изображение") from exc
+
+    if image.format and image.format.upper() not in ALLOWED_FORMATS:
+        raise ValidationError(
+            f"Файл #{index}: формат {image.format} не поддерживается "
+            f"({', '.join(sorted(ALLOWED_FORMATS))})"
+        )
+
+    image = ImageOps.exif_transpose(image).convert("RGB")
+    if image.width < 1 or image.height < 1:
+        raise ValidationError(f"Файл #{index}: у фото нулевая сторона")
+    return image
+
+
 def load_uploads(files: list[FileStorage]) -> list[Image.Image]:
-    """Читает загруженные файлы в RGB и ужимает их до INPUT_MAX_SIDE."""
+    """Читает загруженные файлы в RGB и ужимает длинную сторону до INPUT_MAX_SIDE.
+
+    Это только потолок на размер кадра в RAM. Пайплайн затем сам приводит каждый
+    референс к площади 1024² — от неё, а не от INPUT_MAX_SIDE, зависит длина KV-кэша.
+    """
     files = [f for f in files if f and f.filename]
     if len(files) > settings.max_images:
         raise ValidationError(f"Можно передать не больше {settings.max_images} изображений")
 
     images: list[Image.Image] = []
     for index, storage in enumerate(files, start=1):
-        try:
-            image = Image.open(storage.stream)
-            image.load()
-        except (UnidentifiedImageError, OSError) as exc:
-            raise ValidationError(f"Файл #{index} ({storage.filename}) не читается как изображение") from exc
-
-        if image.format and image.format.upper() not in ALLOWED_FORMATS:
-            raise ValidationError(
-                f"Файл #{index}: формат {image.format} не поддерживается "
-                f"({', '.join(sorted(ALLOWED_FORMATS))})"
-            )
-
-        image = ImageOps.exif_transpose(image).convert("RGB")
+        image = _read_rgb(storage, index=index)
         image.thumbnail((settings.input_max_side, settings.input_max_side), Image.LANCZOS)
+        log.info(
+            "вход image%d: %s %dx%d %s",
+            index, storage.filename, image.width, image.height, image.mode,
+        )
         images.append(image)
 
     return images
+
+
+@dataclass(frozen=True, slots=True)
+class PhotoFrame:
+    """Исходный кадр и его копия для пайплайна.
+
+    Подгонка под кратность 32 и лимиты сторон, и обратный возврат к исходному
+    HxW, живут только здесь. Снаружи видны исходные ширина и высота.
+    """
+
+    width: int
+    height: int
+    model_width: int
+    model_height: int
+    image: Image.Image
+
+    def restore(self, generated: Image.Image) -> Image.Image:
+        """Возвращает результат к исходному HxW. Повторный вызов размера не меняет."""
+        target = (self.width, self.height)
+        if generated.size == target:
+            return generated
+        return generated.resize(target, Image.LANCZOS)
+
+
+def fit_model_size(width: int, height: int) -> tuple[int, int]:
+    """Стороны для пайплайна: пропорции фото и кратность 32.
+
+    Длинная сторона не больше MAX_SIDE. Короткая поднимается до MIN_SIDE, если
+    это не выталкивает длинную за MAX_SIDE.
+    """
+    if width < 1 or height < 1:
+        raise ValidationError("У фото нулевая сторона")
+
+    long_side = max(width, height)
+    short_side = min(width, height)
+    scale = 1.0
+    if long_side > settings.max_side:
+        scale = settings.max_side / long_side
+    if short_side * scale < settings.min_side:
+        scale = settings.min_side / short_side
+    if long_side * scale > settings.max_side:
+        scale = settings.max_side / long_side
+
+    return _snap(width * scale), _snap(height * scale)
+
+
+def _snap(value: float) -> int:
+    high = align(settings.max_side)
+    snapped = int(round(value / _ALIGN)) * _ALIGN
+    if snapped < _ALIGN:
+        snapped = _ALIGN
+    if snapped > high:
+        snapped = high
+    return snapped
+
+
+def prepare_photo(files: list[FileStorage]) -> PhotoFrame:
+    """Одно референсное фото: исходный HxW и кадр, который можно отдать пайплайну."""
+    files = [f for f in files if f and f.filename]
+    if len(files) != 1:
+        raise ValidationError("Нужно ровно одно референсное фото")
+
+    source = _read_rgb(files[0], index=1)
+    model_width, model_height = fit_model_size(source.width, source.height)
+    model = source
+    if source.size != (model_width, model_height):
+        model = source.resize((model_width, model_height), Image.LANCZOS)
+    log.info(
+        "кастомизация %s: фото %dx%d, модель %dx%d",
+        files[0].filename,
+        source.width,
+        source.height,
+        model_width,
+        model_height,
+    )
+    return PhotoFrame(
+        width=source.width,
+        height=source.height,
+        model_width=model_width,
+        model_height=model_height,
+        image=model,
+    )
 
 
 def save_outputs(images: list[Image.Image]) -> list[str]:

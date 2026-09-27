@@ -1,0 +1,5 @@
+# Тесты: без GPU и ML-стека. app.generator подменяется заглушкой в tests/conftest.py.
+# Pillow нужен app/imaging.py; остальное из requirements-ml.txt сюда не тянуть.
+-r requirements.txt
+pytest>=8
+Pillow>=10.4.0

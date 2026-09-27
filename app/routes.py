@@ -11,12 +11,14 @@ from flask import Blueprint, jsonify, render_template, request, send_file, url_f
 
 from .config import settings
 from .generator import GenerationRequest, PipelineError, generator
+from .logbuf import live_logs
 from .imaging import (
     RESOLUTION_PRESETS,
     ValidationError,
     load_uploads,
     output_path,
     parse_resolution,
+    prepare_photo,
     save_outputs,
 )
 
@@ -88,6 +90,17 @@ def index() -> str:
     )
 
 
+@bp.get("/customize")
+def customize() -> str:
+    return render_template(
+        "customize.html",
+        default_steps=settings.default_steps,
+        max_steps=settings.max_steps,
+        default_cfg=settings.default_true_cfg_scale,
+        model_id=settings.model_id,
+    )
+
+
 @bp.get("/healthz")
 def healthz():
     return jsonify(
@@ -112,6 +125,18 @@ def api_config():
             for p in RESOLUTION_PRESETS
         ],
     )
+
+
+@bp.get("/api/logs")
+def api_logs():
+    raw = (request.args.get("after") or "0").strip()
+    try:
+        after = int(raw)
+    except ValueError:
+        after = 0
+    if after < 0:
+        after = 0
+    return jsonify(lines=live_logs().since(after))
 
 
 @bp.post("/api/generate")
@@ -151,6 +176,53 @@ def api_generate():
         duration=round(result.duration, 2),
         width=width,
         height=height,
+        images=[{"name": n, "url": url_for("web.output", name=n)} for n in names],
+    )
+
+
+@bp.post("/api/customize")
+def api_customize():
+    form = request.form
+    prompt = _clean_prompt(form.get("system_prompt"), field="system prompt", required=True)
+    negative = _clean_prompt(form.get("negative_prompt"), field="negative prompt", required=False)
+    frame = prepare_photo(request.files.getlist("image"))
+    steps = _parse_int(
+        form.get("steps"), field="steps", default=settings.default_steps, low=1, high=settings.max_steps
+    )
+    cfg = _parse_cfg(form.get("true_cfg_scale"))
+    seed = _parse_seed(form.get("seed"))
+
+    log.info(
+        "Кастомизация: фото %dx%d, модель %dx%d, steps=%d, cfg=%.1f, seed=%d",
+        frame.width,
+        frame.height,
+        frame.model_width,
+        frame.model_height,
+        steps,
+        cfg,
+        seed,
+    )
+
+    result = generator.generate(
+        GenerationRequest(
+            prompt=prompt,
+            negative_prompt=negative or settings.default_negative_prompt,
+            width=frame.model_width,
+            height=frame.model_height,
+            steps=steps,
+            true_cfg_scale=cfg,
+            seed=seed,
+            images=[frame.image],
+        )
+    )
+
+    restored = [frame.restore(image) for image in result.images]
+    names = save_outputs(restored)
+    return jsonify(
+        seed=result.seed,
+        duration=round(result.duration, 2),
+        width=frame.width,
+        height=frame.height,
         images=[{"name": n, "url": url_for("web.output", name=n)} for n in names],
     )
 

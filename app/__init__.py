@@ -6,9 +6,11 @@ import logging
 import threading
 
 from flask import Flask, jsonify
+from werkzeug.exceptions import HTTPException
 
 from .config import settings
 from .generator import generator
+from .logbuf import live_logs
 from .routes import bp
 
 log = logging.getLogger(__name__)
@@ -35,6 +37,7 @@ def _preload_in_background() -> None:
 
 def create_app() -> Flask:
     _configure_logging()
+    live_logs()
 
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = settings.max_content_length
@@ -43,6 +46,8 @@ def create_app() -> Flask:
 
     @app.errorhandler(Exception)
     def _on_unexpected(exc: Exception):
+        if isinstance(exc, HTTPException):
+            return exc
         log.exception("Необработанная ошибка")
         return jsonify(error=f"Внутренняя ошибка: {type(exc).__name__}"), 500
 
