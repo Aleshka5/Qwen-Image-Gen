@@ -1,4 +1,4 @@
-"""README и Containerfile: запуск за Auth Gateway в двух сетях без публикации порта."""
+"""README, Dockerfile и compose.yaml: запуск за Auth Gateway в двух сетях без публикации порта."""
 
 from __future__ import annotations
 
@@ -11,9 +11,11 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 README = (ROOT / "README.md").read_text(encoding="utf-8")
-CONTAINERFILE = (ROOT / "Containerfile").read_text(encoding="utf-8")
+DOCKERFILE = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+COMPOSE = (ROOT / "compose.yaml").read_text(encoding="utf-8")
 
 NETWORK = "qwen_image_gen_network"
+AUTH_NETWORK = "deploy_auth_network"
 
 
 def _code_lines(markdown: str, languages=("bash", "sh", "shell", "")) -> list[str]:
@@ -30,7 +32,7 @@ def _service_run_commands() -> list[list[str]]:
         if not line.startswith("podman run"):
             continue
         tokens = shlex.split(line, comments=True)
-        if "qwen-image-service:latest" in tokens and "--device" in " ".join(tokens):
+        if "qwen-image-service:latest" in tokens and "--device" in tokens:
             commands.append(tokens)
     return commands
 
@@ -43,6 +45,28 @@ def _option(tokens: list[str], name: str) -> list[str]:
         elif token.startswith(name + "="):
             values.append(token.split("=", 1)[1])
     return values
+
+
+def _block(text: str, key: str, indent: int) -> str:
+    """Тело YAML-ключа на заданном отступе, без вложенных соседей того же уровня."""
+    prefix = " " * indent + key + ":"
+    lines = text.splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        if line == prefix or line.startswith(prefix + " "):
+            start = i + 1
+            break
+    assert start is not None, f"нет ключа {key!r} с отступом {indent}"
+    body: list[str] = []
+    for line in lines[start:]:
+        if not line.strip() or line.lstrip().startswith("#"):
+            body.append(line)
+            continue
+        current = len(line) - len(line.lstrip(" "))
+        if current <= indent:
+            break
+        body.append(line)
+    return "\n".join(body)
 
 
 @pytest.fixture(scope="module")
@@ -63,7 +87,7 @@ def test_run_attaches_network(run_commands):
         assert NETWORK in networks
         auth = [value for value in networks if value != NETWORK]
         assert len(auth) == 1
-        assert "deploy_auth_network" in auth[0] or "${AUTH_DOCKER_NETWORK:-deploy_auth_network}" in auth[0]
+        assert AUTH_NETWORK in auth[0] or "${AUTH_DOCKER_NETWORK:-deploy_auth_network}" in auth[0]
 
 
 def test_run_does_not_publish_ports(run_commands):
@@ -103,21 +127,37 @@ def test_readme_mentions_gateway_topology(text):
     assert text in README
 
 
-def test_quadlet_attaches_auth_network_on_start():
-    quadlet = (ROOT / "deploy" / "qwen-image.container").read_text(encoding="utf-8")
-    assert "Network=qwen_image_gen_network" in quadlet
-    assert "Network=deploy_auth_network" in quadlet
-    assert "ContainerName=qwen-image" in quadlet
-    assert "PublishPort" not in quadlet
-    assert "deploy/qwen-image.container" in README
-    assert "systemctl --user daemon-reload" in README
+def test_compose_attaches_both_networks_without_publishing():
+    service = _block(COMPOSE, "qwen-image", indent=2)
+    assert "image: qwen-image-service:latest" in service
+    assert "container_name: qwen-image" in service
+    assert "env_file: .env" in service
+    assert "shm_size: 8gb" in service
+    assert "mem_limit: 64g" in service
+    assert "nvidia.com/gpu=all" in service
+    assert "qwen-hf-cache:/data/huggingface" in service
+    assert "qwen-outputs:/data/outputs" in service
+    networks = _block(service, "networks", indent=4)
+    assert f"- {NETWORK}" in networks
+    assert f"- {AUTH_NETWORK}" in networks
+    assert "ports:" not in COMPOSE
+    assert "8000:8000" not in COMPOSE
+
+    declared = _block(COMPOSE, "networks", indent=0)
+    for name in (NETWORK, AUTH_NETWORK):
+        body = _block(declared, name, indent=2)
+        assert "external: true" in body
+
+    assert "compose.yaml" in README
+    assert not (ROOT / "deploy" / "qwen-image.container").exists()
+    assert not (ROOT / "Containerfile").exists()
 
 
 def test_readme_states_webstorage_save_and_network_boundary():
     assert "WEBSTORAGE_URL" in README or "http://app:8000" in README
     assert "X-Auth-User-Id" in README
-    assert "только gateway и `qwen-image`" in README
-    assert re.search(r"WebStorage в `qwen_image_gen_network` не входит", README)
+    assert "only the gateway and `qwen-image`" in README
+    assert re.search(r"WebStorage is not on `qwen_image_gen_network`", README)
 
 
 def test_readme_has_no_host_port_in_commands():
@@ -137,14 +177,29 @@ def test_readme_has_no_host_localhost_8000():
     assert offenders == []
 
 
+def test_readme_documents_uv_and_podman():
+    assert "uv sync" in README
+    assert "uv run pytest" in README
+    assert "podman build" in README
+    assert "podman compose" in README
+    for forbidden in ("docker run", "docker build", "docker compose", "docker exec", "docker network"):
+        assert forbidden not in README
+    assert "Containerfile" not in README
+    assert "requirements-dev.txt" not in README
+    assert "docs/api-contract.md" in README
+    assert "docs/design.md" in README
+    assert "docs/adr/" in README
+    assert "docs/tests.md" in README
+
+
 def _instruction(keyword: str) -> str:
-    joined = re.sub(r"\\\n\s*", " ", CONTAINERFILE)
+    joined = re.sub(r"\\\n\s*", " ", DOCKERFILE)
     matches = [line for line in joined.splitlines() if line.startswith(keyword + " ")]
     assert len(matches) == 1, f"ожидается ровно одна инструкция {keyword}"
     return matches[0][len(keyword) + 1:].strip()
 
 
-def test_containerfile_gunicorn_listens_on_container_network():
+def test_dockerfile_gunicorn_listens_on_container_network():
     cmd = json.loads(_instruction("CMD"))
     assert cmd[0] == "gunicorn"
     assert _option(cmd, "--bind") == ["0.0.0.0:8000"]
@@ -153,6 +208,14 @@ def test_containerfile_gunicorn_listens_on_container_network():
     assert cmd[-1] == "wsgi:app"
 
 
-def test_containerfile_healthcheck_probes_healthz():
+def test_dockerfile_healthcheck_probes_healthz():
     healthcheck = _instruction("HEALTHCHECK")
     assert re.search(r"CMD .*curl .*:8000/healthz\b", healthcheck)
+
+
+def test_dockerfile_installs_with_uv_sync():
+    assert "uv sync --frozen --no-dev --group ml --no-install-project" in DOCKERFILE
+    assert "python3-pip" not in DOCKERFILE
+    assert "pip install" not in DOCKERFILE
+    assert "uv.lock" in DOCKERFILE
+    assert "pyproject.toml" in DOCKERFILE

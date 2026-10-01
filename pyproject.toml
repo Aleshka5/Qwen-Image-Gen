@@ -1,0 +1,44 @@
+[project]
+name = "qwen-image-service"
+version = "0.1.0"
+requires-python = ">=3.10,<3.12"
+dependencies = [
+    "Flask>=3.0.3",
+    "gunicorn>=23.0.0",
+    "python-dotenv>=1.0.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "Pillow>=10.4.0",
+]
+# QwenImage21Pipeline (Qwen/Qwen-Image-2.1) exists only on main — release 0.40.0 does not have it.
+# Pinned to the main commit from 2026-09-25; after 0.41.0, switch back to diffusers>=0.41.0.
+# torch 2.7.1 and torchvision 0.22.1 come only from the cu126 index (see tool.uv.sources).
+ml = [
+    "diffusers @ https://github.com/huggingface/diffusers/archive/bdc2bea37a36038c44452811610489ea30ede229.tar.gz",
+    "transformers>=5.17.0",
+    "accelerate>=1.10.0",
+    "optimum-quanto>=0.2.7",
+    "safetensors>=0.4.5",
+    "sentencepiece>=0.2.0",
+    "protobuf>=4.25.0",
+    "huggingface-hub>=0.35.0",
+    "Pillow>=10.4.0",
+    "torch==2.7.1",
+    "torchvision==0.22.1",
+]
+
+[tool.uv]
+package = false
+default-groups = ["dev"]
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu126" }
+torchvision = { index = "pytorch-cu126" }

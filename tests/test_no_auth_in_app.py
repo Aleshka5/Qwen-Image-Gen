@@ -287,11 +287,34 @@ AUTH_PACKAGES = {
 }
 
 
-@pytest.mark.parametrize("filename", ["requirements.txt", "requirements-ml.txt"])
-def test_requirements_have_no_auth_libraries(filename):
+def _pyproject_array(key: str) -> str:
+    """Тело массива `key = [ ... ]` в pyproject.toml (dependencies или группа ml)."""
+    text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    match = re.search(rf"(?m)^{re.escape(key)}\s*=\s*\[", text)
+    assert match, key
+    depth = 1
+    i = match.end()
+    start = i
+    while i < len(text) and depth:
+        if text[i] == "[":
+            depth += 1
+        elif text[i] == "]":
+            depth -= 1
+        i += 1
+    assert depth == 0, key
+    return text[start : i - 1]
+
+
+def _dependency_names(body: str) -> set[str]:
     names = set()
-    for line in (ROOT / filename).read_text(encoding="utf-8").splitlines():
-        line = line.split("#", 1)[0].strip()
+    body = re.sub(r"#.*", "", body)
+    for match in re.finditer(r"""(['"])(.*?)\1""", body):
+        line = match.group(2).strip()
         if line and not line.startswith("-"):
             names.add(re.split(r"[\s<>=!~;\[@]", line, maxsplit=1)[0].lower().replace("_", "-"))
-    assert names & AUTH_PACKAGES == set()
+    return names
+
+
+@pytest.mark.parametrize("key", ["dependencies", "ml"])
+def test_pyproject_has_no_auth_libraries(key):
+    assert _dependency_names(_pyproject_array(key)) & AUTH_PACKAGES == set()

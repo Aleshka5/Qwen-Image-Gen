@@ -8,6 +8,5 @@ outputs/
 .venv/
 README.md
 tests/
-requirements-dev.txt
 pytest.ini
 docs/

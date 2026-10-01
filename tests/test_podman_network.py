@@ -1,7 +1,8 @@
 """Смоук-тест топологии: контейнер доступен по имени в сети и не публикует порты на хост.
 
-Запуск: RUN_PODMAN_TESTS=1 .venv/bin/pytest -m podman. GPU не нужен — /healthz отвечает без модели.
+Запуск: RUN_PODMAN_TESTS=1 uv run pytest -m podman. GPU не нужен — /healthz отвечает без модели.
 Используются временные сеть и контейнер; реальные qwen_image_gen_network и qwen-image не трогаются.
+По умолчанию тест пропускается и не требует демона Podman.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ def _podman(*args: str, check: bool = True, timeout: float = 120) -> subprocess.
 def _image_exists() -> bool:
     if shutil.which("podman") is None:
         return False
-    return _podman("image", "exists", IMAGE, check=False).returncode == 0
+    return _podman("image", "inspect", IMAGE, check=False).returncode == 0
 
 
 pytestmark = [
@@ -55,8 +56,8 @@ def service():
         )
         yield network, container
     finally:
-        _podman("rm", "-f", "-t", "0", container, check=False)
-        _podman("network", "rm", "-f", network, check=False)
+        _podman("rm", "-f", container, check=False)
+        _podman("network", "rm", network, check=False)
 
 
 def _probe_healthz(network: str) -> dict | None:

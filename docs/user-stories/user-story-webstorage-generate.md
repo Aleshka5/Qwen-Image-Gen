@@ -37,7 +37,7 @@ WebStorage’s `app` is on `auth_network` as the DNS name `app`. This container 
 | D1 | The form at `GET /` remains the only generator. No history list on this site. |
 | D2 | On a successful generate, if `X-Auth-User-Id` is a UUID, POST the bundle to `{WEBSTORAGE_URL}/api/generated` (default `http://app:8000`). |
 | D3 | Forward `X-Auth-User-Id` and, when present, `X-Auth-Email`. Do not send `Cookie`, `Authorization`, or `X-Auth-Role`. |
-| D4 | No user id (operator `curl` on the docker network) still generates. The response says the run was not saved. The picture is still returned. |
+| D4 | No user id (operator `curl` on the podman network) still generates. The response says the run was not saved. The picture is still returned. |
 | D5 | A Storage error (quota, 403, 503, timeout) does not fail the generate. The picture is returned, with `saved: false` and Storage’s error text. |
 | D6 | A failed generate (400 / 413 / 503) does not call Storage. |
 | D7 | Client timeout toward Storage is 60s. The GPU wait is unchanged (`--timeout 0`). Saving is a file upload, not another generate. |
@@ -141,7 +141,7 @@ On `auth_network` this container’s name is `qwen-image`. WebStorage’s name t
 - Generate `400`, `413`, or `503` does not call Storage.
 - The form shows the image in both save outcomes, and shows `storage_error` only when `saved` is false.
 
-### US-QWN-03 — Reach Storage on the docker network
+### US-QWN-03 — Reach Storage on the podman network
 
 **As** this container, **I call `http://app:8000` on `auth_network`.**
 

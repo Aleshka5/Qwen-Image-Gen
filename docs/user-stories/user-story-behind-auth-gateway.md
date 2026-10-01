@@ -2,7 +2,7 @@
 
 > **Status:** Implemented in README and run docs (see §6). Routes unchanged; one error-handler fix in `app/__init__.py`.
 > **Repos:** qwen-image-service only (run topology and docs). No auth code in the Flask app.
-> **Caller:** Auth Gateway, from Auth-Service [`docs/user-story-image-host.md`](../../Auth-Service/docs/user-story-image-host.md).
+> **Caller:** Auth Gateway, from Auth-Service [`docs/user-story-image-host.md`](../../../Auth-Service/docs/user-story-image-host.md).
 > **Public URL (not this process):** `https://image.filenkov.store`.
 
 **Actor:** The household member who already passed the gateway. This service does not decide that.
@@ -19,7 +19,7 @@ The app is one Flask/gunicorn process. `GET /` is the form, `POST /api/generate`
 
 The README's `podman run` publishes `-p 8000:8000`. That would put the GPU UI on the host network, beside the gateway. This request removes that publication.
 
-This service does not read `X-Auth-*`, cookies, or JWTs. A later change is the exception: `POST /api/generate` reads `X-Auth-User-Id` and `X-Auth-Email` only to save the run to WebStorage (`docs/user-story-webstorage-generate.md`). The gateway strips client-supplied `X-Auth-*` and only proxies `FAMILY` and `ADMIN` on the `image` role. A request that arrives here is already allowed.
+This service does not read `X-Auth-*`, cookies, or JWTs. A later change is the exception: `POST /api/generate` reads `X-Auth-User-Id` and `X-Auth-Email` only to save the run to WebStorage (`docs/user-stories/user-story-webstorage-generate.md`). The gateway strips client-supplied `X-Auth-*` and only proxies `FAMILY` and `ADMIN` on the `image` role. A request that arrives here is already allowed.
 
 ## 2. Requested run
 
@@ -58,7 +58,7 @@ The Auth gateway joins `qwen_image_gen_network` from its own compose (`external:
 
 | Area | Done |
 | --- | --- |
-| `README.md` | New «Сеть и доступ» section: public URL, network-only reachability, gateway decides allow/deny, `/healthz` anonymous, warning against `-p 8000:8000`. Step 4 adds `podman network create qwen_image_gen_network`. The run command has `--name qwen-image --network qwen_image_gen_network` and no `-p`; GPU, volumes, `--shm-size` and `--memory` are unchanged. Readiness is checked from inside the network (`curlimages/curl` → `http://qwen-image:8000/healthz`) or with `podman exec`. `podman port qwen-image` and `ss -ltn \| grep :8000` confirm nothing listens on the host. The API example runs from inside the network. Systemd note: the network must exist before the unit starts. New «Тесты» section. |
+| `README.md` | New "Network and access" section: public URL, network-only reachability, gateway decides allow/deny, `/healthz` anonymous, warning against `-p 8000:8000`. Step 4 adds `podman network create qwen_image_gen_network`. The run command has `--name qwen-image --network qwen_image_gen_network` and no `-p`; GPU, volumes, `--shm-size` and `--memory` are unchanged. Readiness is checked from inside the network (`curlimages/curl` → `http://qwen-image:8000/healthz`) or with `podman exec`. `podman port qwen-image` and `ss -ltn \| grep :8000` confirm nothing listens on the host. The API example runs from inside the network. Systemd note: the network must exist before the unit starts. New "Tests" section. |
 | `.env.example` | Comment on `HOST`/`PORT`: in-container address only, the port is not published. |
 | `.containerignore` | Excludes `tests/`, `requirements-dev.txt`, `pytest.ini`, `docs/` from the build context. |
 | `tests/`, `requirements-dev.txt`, `pytest.ini` | New pytest suite with the generator stubbed, so it needs no GPU, torch or diffusers. |

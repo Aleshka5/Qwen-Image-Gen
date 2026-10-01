@@ -1,0 +1,35 @@
+# qwen-image listens on 8000 only inside the networks. Do not add a ports section.
+# The host provides the GPU through NVIDIA CDI `nvidia.com/gpu=all`
+# (`nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`).
+
+services:
+  qwen-image:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: qwen-image-service:latest
+    container_name: qwen-image
+    env_file: .env
+    restart: always
+    shm_size: 8gb
+    mem_limit: 64g
+    devices:
+      - nvidia.com/gpu=all
+    volumes:
+      - qwen-hf-cache:/data/huggingface
+      - qwen-outputs:/data/outputs
+    networks:
+      - qwen_image_gen_network
+      - deploy_auth_network
+
+networks:
+  qwen_image_gen_network:
+    external: true
+  deploy_auth_network:
+    external: true
+
+volumes:
+  qwen-hf-cache:
+    name: qwen-hf-cache
+  qwen-outputs:
+    name: qwen-outputs

@@ -1,149 +1,147 @@
 # Qwen-Image Service
 
-Flask-сервис генерации изображений на базе [Qwen/Qwen-Image-2.1](https://huggingface.co/Qwen/Qwen-Image-2.1),
-собранный под **Tesla V100 32 GB**: до 10 референсных фото, выбор разрешения и промпт на английском.
+A Flask image-generation service based on [Qwen/Qwen-Image-2.1](https://huggingface.co/Qwen/Qwen-Image-2.1),
+built for a **Tesla V100 32 GB**: up to 10 reference photos, a choice of resolution, and an English prompt.
 
 ---
 
-## Сеть и доступ
+## Network and access
 
-Браузеры открывают сервис по адресу **https://image.filenkov.store** — это Auth Gateway, а не этот процесс.
-Контейнер `qwen-image` доступен только в podman-сети `qwen_image_gen_network`: gateway проксирует на upstream `http://qwen-image:8000`.
-Сеть создаёт этот репозиторий; Auth-Service подключается к ней из своего compose как `external: true`.
+Browsers open the service at **https://image.filenkov.store**. That is the Auth Gateway, not this process.
+The `qwen-image` container is reachable only on `qwen_image_gen_network`: the gateway proxies to the upstream `http://qwen-image:8000`.
+This repository creates the network. Auth-Service attaches to it from its own compose file as `external: true`.
 
-Пускать или нет — решает gateway: роль `image` (`FAMILY` или `ADMIN` в User-Service).
-Входящие от клиента `X-Auth-*` gateway вырезает. В самом сервисе нет логина, сессий, проверки ролей и проверки JWT.
-Исключение — `POST /api/generate`: `X-Auth-User-Id` и `X-Auth-Email` читаются только чтобы подписать сохранение в WebStorage.
-Маршруты `GET` эти заголовки не используют. Запрос, дошедший сюда, уже разрешён.
-Поэтому граница доверия — сама сеть: в `qwen_image_gen_network` должны быть только gateway и `qwen-image`.
-WebStorage в `qwen_image_gen_network` не входит. Любой другой контейнер в этой сети обходит проверку роли.
+The gateway decides who is allowed: the `image` role (`FAMILY` or `ADMIN` in User-Service).
+The gateway strips incoming client `X-Auth-*` headers. This service has no login, sessions, role check, or JWT check.
+The exception is `POST /api/generate`: `X-Auth-User-Id` and `X-Auth-Email` are read only to sign the save into WebStorage.
+`GET` routes do not use those headers. A request that arrived here is already allowed.
+The trust boundary is the network itself: `qwen_image_gen_network` may contain only the gateway and `qwen-image`.
+WebStorage is not on `qwen_image_gen_network`. Any other container on that network bypasses the role check.
 
-Чтобы после удачной генерации вызвать WebStorage, этот контейнер дополнительно подключается к сети Auth.
-`AUTH_DOCKER_NETWORK` — сеть стека Auth (`deploy_auth_network`, если Auth запущен из `Auth-Service/deploy`).
-Её этот репозиторий не создаёт: стек Auth уже должен быть поднят.
-На этой сети контейнер остаётся с именем `qwen-image` и ходит на DNS-имя `app` — так там называется WebStorage.
-Переименовывать этот контейнер в `app` нельзя.
+To call WebStorage after a successful generation, this container also joins the Auth network.
+`AUTH_DOCKER_NETWORK` is the Auth stack network (`deploy_auth_network` when Auth is started from `Auth-Service/deploy`).
+This repository does not create it: the Auth stack must already be up.
+On that network the container keeps the name `qwen-image` and calls the DNS name `app`, which is what WebStorage is called there.
+Do not rename this container to `app`.
 
-После успешной генерации процесс делает `POST` на `WEBSTORAGE_URL` (по умолчанию `http://app:8000`) по пути `/api/generated`.
-Он передаёт `X-Auth-User-Id` и, если заголовок был во входящем запросе, `X-Auth-Email`.
-`Cookie`, `Authorization` и `X-Auth-Role` не отправляются. JWT этот сервис не проверяет.
-В `.env` для адреса архива задаётся `WEBSTORAGE_URL=http://app:8000`.
+After a successful generation the process `POST`s to `WEBSTORAGE_URL` (default `http://app:8000`) at `/api/generated`.
+It forwards `X-Auth-User-Id` and, if that header was on the incoming request, `X-Auth-Email`.
+`Cookie`, `Authorization`, and `X-Auth-Role` are not sent. This service does not verify a JWT.
+The archive address in `.env` is `WEBSTORAGE_URL=http://app:8000`.
 
-`GET /healthz` в приложении анонимный. Gateway отдаёт этот путь без роли — для проб оператора, всё остальное требует роль `image`.
+`GET /healthz` is anonymous in the application. The gateway serves that path without a role, for operator probes. Everything else requires the `image` role.
 
-> **Никогда не добавляйте `-p 8000:8000`.** Это выставит GPU-UI в сеть хоста рядом с gateway и позволит обойти его.
+> **Never add `-p 8000:8000` or a `ports` section to `compose.yaml`.** That would put the GPU UI on the host network next to the gateway and bypass it.
 
 ---
 
-## Что учтено про V100
+## What the V100 requires
 
-V100 — это архитектура Volta (SM 7.0), и она накладывает три жёстких ограничения:
+The V100 is Volta (SM 7.0), and that imposes three hard limits:
 
-| Ограничение | Как обходим |
+| Limit | How we work around it |
 |---|---|
-| Нет аппаратного **bfloat16** | Веса грузятся в `float16`; хвост текстового энкодера в RAM тоже `float16` |
-| Нет **FlashAttention-2** (требует SM 8.0+) | `ATTENTION_BACKEND=native` — PyTorch SDPA (`mem_efficient` / `math`). Имя `sdpa` принимается как алиас |
-| Весь пайплайн в fp16 ≈ **33 GB** (DiT 7B ~14 GB, Qwen3-VL 8B ~17.5 GB, VAE ~1.4 GB) | Энкодер целиком на карту не ставится. `int8` сжимает DiT до ~7 GB; vision-башня и 24 слоя декодера остаются в VRAM, хвост энкодера — в RAM в `float16` |
+| No hardware **bfloat16** | Weights load in `float16`; the text-encoder tail in RAM is `float16` too |
+| No **FlashAttention-2** (needs SM 8.0+) | `ATTENTION_BACKEND=native` — PyTorch SDPA (`mem_efficient` / `math`). The name `sdpa` is accepted as an alias |
+| The whole pipeline in fp16 is about **33 GB** (DiT 7B ~14 GB, Qwen3-VL 8B ~17.5 GB, VAE ~1.4 GB) | The encoder does not go on the card as a whole. `int8` compresses the DiT to ~7 GB; the vision tower and 24 decoder layers stay in VRAM, and the encoder tail stays in RAM in `float16` |
 
-Qwen-Image-2.1 — это 7B single-stream DiT и текстовый энкодер **Qwen3-VL 8B**.
-Энкодер **целиком на карту не ставится**: вместе с DiT и VAE он занимает около 33 GB. Vision-башня и первые слои декодера живут в VRAM (референсы идут через них), хвост — в RAM.
+Qwen-Image-2.1 is a 7B single-stream DiT and a **Qwen3-VL 8B** text encoder.
+The encoder **does not go on the card as a whole**: together with the DiT and the VAE it takes about 33 GB. The vision tower and the first decoder layers live in VRAM (references pass through them); the tail lives in RAM.
 
-Diffusers исходит из того, что все модули пайплайна на одном устройстве, поэтому `text_encoder.to("cpu")`
-сломал бы `__call__`. Вместо этого используется прокси [`app/offload.py`](app/offload.py): снаружи он
-отвечает `device=cuda`, внутри считает на CPU (кроме vision и GPU-слоёв) и возвращает эмбеддинги на GPU.
+Diffusers assumes every pipeline module is on one device, so `text_encoder.to("cpu")`
+would break `__call__`. Instead, [`app/offload.py`](app/offload.py) proxies the encoder: from the outside it
+reports `device=cuda`, inside it computes on CPU (except vision and the GPU layers), and it returns embeddings to the GPU.
 
-### Режимы памяти (`MEMORY_MODE`)
+### Memory modes (`MEMORY_MODE`)
 
-| Режим | VRAM | Скорость | Когда брать |
+| Mode | VRAM | Speed | When to use it |
 |---|---|---|---|
-| `int8` *(по умолчанию)* | ~20 GB весов (DiT int8 + VAE + 24 слоя энкодера) + KV-кэш | базовая | штатный режим для референсов: DiT ~7 GB, остаток VRAM — энкодер и KV. Каждый референс — около 2 GB KV в fp16 |
-| `fp16` | ~16 GB один DiT, энкодер почти весь в RAM | быстрее | text-to-image и 1–2 фото. Десять референсов в этот бюджет не входят; RAM при этом забивается раньше VRAM |
-| `offload` | ~8 GB | в 3–10 раз медленнее | если и int8 упирается в VRAM |
+| `int8` *(default)* | ~20 GB of weights (DiT int8 + VAE + 24 encoder layers) + KV cache | baseline | the normal mode for references: DiT ~7 GB, the rest of VRAM is the encoder and KV. Each reference is about 2 GB of KV in fp16 |
+| `fp16` | ~16 GB for the DiT alone, encoder almost entirely in RAM | faster | text-to-image and 1–2 photos. Ten references do not fit this budget; RAM fills before VRAM |
+| `offload` | ~8 GB | 3–10× slower | when even int8 runs out of VRAM |
 
-Вычисления и в `int8` остаются fp16: у V100 тензорные ядра именно такие. Квантизация экономит память весов, а не ускоряет matmul.
-`true_cfg_scale` выше 1 хранит второй KV-кэш и на десяти референсах переполняет 32 GB в любом режиме.
-
----
-
-## Требования
-
-* Podman 4.4+ с работающим GPU-проходом (`nvidia-container-toolkit` + CDI)
-* NVIDIA-драйвер 560+ (проверено на 580.178.04)
-* **~40 GB** свободного диска под веса (сами файлы около 33 GB)
-* **~40 GB** свободной RAM: хвост Qwen3-VL в fp16 плюс буфер на время загрузки. 64 GB — запас, если вернётесь к `TEXT_ENCODER_DTYPE=float32`
+Compute stays fp16 even in `int8`: that is what the V100 tensor cores do. Quantization saves weight memory; it does not speed up matmul.
+`true_cfg_scale` above 1 keeps a second KV cache and, with ten references, overflows 32 GB in every mode.
 
 ---
 
-## Быстрый старт
+## Requirements
 
-### 1. Настроить CDI для GPU (один раз на хосте)
+* Podman with `podman compose` and GPU passthrough (`nvidia-container-toolkit` + CDI, device `nvidia.com/gpu=all`)
+* NVIDIA driver 560+ (checked on 580.178.04)
+* **~40 GB** of free disk for the weights (the files themselves are about 33 GB)
+* **~40 GB** of free RAM: the Qwen3-VL tail in fp16 plus headroom while loading. 64 GB is the margin if you return to `TEXT_ENCODER_DTYPE=float32`
+
+---
+
+## Quick start
+
+### 1. Configure CDI for the GPU (once per host)
 
 ```bash
 sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
 ```
 
-Проверка, что Podman видит карту:
+Check that Podman sees the card through CDI:
 
 ```bash
 podman run --rm --device nvidia.com/gpu=all docker.io/nvidia/cuda:12.6.3-base-ubuntu22.04 nvidia-smi
 ```
 
-Для rootless Podman дополнительно нужно `sudo nvidia-ctk config --set nvidia-container-cli.no-cgroups --in-place`.
+`compose.yaml` requests the same device: `devices: [nvidia.com/gpu=all]`. Without a CDI spec on the host, the GPU does not enter the container.
 
-### 2. Подготовить окружение
+### 2. Prepare the environment
 
 ```bash
 cp .env.example .env
 ```
 
-В `.env` правится как минимум `MODEL_ID`/`PIPELINE_CLASS` (если нужна другая ревизия) и, для gated-репозиториев, `HF_TOKEN`.
+In `.env`, set at least `MODEL_ID` / `PIPELINE_CLASS` (if you need another revision) and, for gated repositories, `HF_TOKEN`.
 
-### 3. Собрать образ
-
-```bash
-podman build -t qwen-image-service:latest -f Containerfile .
-```
-
-Сборка многостадийная: `base` (CUDA + Python) → `ml` (torch 2.7.1+cu126, diffusers, transformers,
-optimum-quanto — из `requirements-ml.txt`) → `app` (Flask/gunicorn из `requirements.txt` и код).
-Правка кода или веб-зависимостей пересобирает только `app`; стадия `ml` берётся из кеша слоёв.
-Не используйте `--no-cache` без нужды — он заставит заново ставить весь ML-стек (сами колёса
-при этом возьмутся из pip-кеша сборки, не из сети).
-
-Проверить только ML-стек, не собирая сервис:
+### 3. Build the image
 
 ```bash
-podman build --target ml -t qwen-image-ml -f Containerfile .
+podman build -t qwen-image-service:latest -f Dockerfile .
 ```
 
-### 4. Тома под кеш весов и результаты, сеть
+The build is multi-stage: `base` (CUDA + system Python 3.10) → `ml` (`uv sync --frozen --no-dev --group ml`: torch 2.7.1+cu126, diffusers, transformers, optimum-quanto from the lock) → `app` (service code; gunicorn is already a project dependency).
+A code change rebuilds only `app`; the `ml` stage comes from the layer cache.
+Do not use `--no-cache` without a reason — it reinstalls the whole ML stack (the wheels themselves
+still come from the build's uv cache, not from the network). The `dev` group is not installed in the image.
 
-Веса скачиваются один раз и должны пережить пересоздание контейнера:
+To check only the ML stack, without building the service:
+
+```bash
+podman build --target ml -t qwen-image-ml -f Dockerfile .
+```
+
+### 4. Volumes for the weight cache and results, and the network
+
+Weights download once and must survive recreating the container:
 
 ```bash
 podman volume create qwen-hf-cache && podman volume create qwen-outputs
 ```
 
-Сеть, через которую к сервису ходит Auth Gateway (один раз):
+The network the Auth Gateway uses to reach the service (once):
 
 ```bash
 podman network create qwen_image_gen_network
 ```
 
-Сеть Auth (`AUTH_DOCKER_NETWORK`, при запуске из `Auth-Service/deploy` это `deploy_auth_network`) здесь не создаётся.
-Перед запуском стек Auth уже должен быть поднят: на этой сети WebStorage отвечает как `app`.
+The Auth network (`AUTH_DOCKER_NETWORK`; `deploy_auth_network` when started from `Auth-Service/deploy`) is not created here.
+The Auth stack must already be up before start: on that network WebStorage answers as `app`.
 
-### 5. Запустить
+### 5. Start
 
-Порт 8000 на хост не публикуется — см. [«Сеть и доступ»](#сеть-и-доступ).
-Контейнер подключается к обеим сетям: к `qwen_image_gen_network` и к сети Auth.
+Port 8000 is not published on the host — see [Network and access](#network-and-access).
+The container joins both networks: `qwen_image_gen_network` and the Auth network.
 
 ```bash
 podman run -d --name qwen-image \
   --network qwen_image_gen_network \
   --network "${AUTH_DOCKER_NETWORK:-deploy_auth_network}" \
   --device nvidia.com/gpu=all \
-  --security-opt=label=disable \
   --env-file .env \
   -v qwen-hf-cache:/data/huggingface \
   -v qwen-outputs:/data/outputs \
@@ -151,13 +149,13 @@ podman run -d --name qwen-image \
   qwen-image-service:latest
 ```
 
-Первый старт скачивает ~33 GB весов и квантует DiT — это десятки минут. Прогресс видно в логах:
+The first start downloads ~33 GB of weights and quantizes the DiT. That takes tens of minutes. Progress is in the logs:
 
 ```bash
 podman logs -f qwen-image
 ```
 
-Готовность — изнутри сети или изнутри контейнера (в образе есть `curl`):
+Readiness is checked from inside the network or from inside the container (the image has `curl`):
 
 ```bash
 podman run --rm --network qwen_image_gen_network docker.io/curlimages/curl -s http://qwen-image:8000/healthz
@@ -167,27 +165,25 @@ podman run --rm --network qwen_image_gen_network docker.io/curlimages/curl -s ht
 podman exec qwen-image curl -fsS http://127.0.0.1:8000/healthz
 ```
 
-`{"loaded": true}` означает, что модель в памяти и сервис принимает запросы. UI — на `https://image.filenkov.store/` (через gateway).
+`{"loaded": true}` means the model is in memory and the service accepts requests. The UI is at `https://image.filenkov.store/` (through the gateway).
 
-С хоста на публичном `:8000` ничего не слушает. Обе команды должны вывести пустоту:
+Nothing listens on public `:8000` on the host. Both commands should print nothing:
 
 ```bash
 podman port qwen-image; ss -ltn | grep :8000
 ```
 
-### Systemd-юнит (автозапуск)
+### Podman Compose
 
-Файл `deploy/qwen-image.container` — Quadlet. При каждом старте, в том числе после перезагрузки, он поднимает контейнер сразу в двух сетях: `qwen_image_gen_network` и `deploy_auth_network`. Обе сети должны существовать до старта юнита. Первую создаёт шаг 4. Вторую создаёт стек Auth; этот репозиторий её не создаёт.
+`compose.yaml` starts the same `qwen-image` container (image `qwen-image-service:latest`) on two external networks at once: `qwen_image_gen_network` and `deploy_auth_network`. Both networks must exist before start. Step 4 creates the first. The Auth stack creates the second; this repository does not.
 
-`podman generate systemd --new` не используется: он повторяет исходный `podman run` и теряет вторую сеть, если контейнер когда-то создали только с `qwen_image_gen_network`.
+The file sets `env_file: .env`, volumes `qwen-hf-cache` and `qwen-outputs`, `shm_size: 8gb`, `mem_limit: 64g`, and the CDI device `nvidia.com/gpu=all`. There is no `ports` section: port 8000 stays inside the networks. `restart: always` brings the container back after the Podman daemon restarts.
 
 ```bash
-mkdir -p ~/.config/containers/systemd
-cp deploy/qwen-image.container ~/.config/containers/systemd/
-systemctl --user daemon-reload
+podman compose up -d
 ```
 
-Quadlet сам попадает в `default.target` (`WantedBy`). Отдельный `systemctl enable` для такого юнита не нужен. `daemon-reload` не пересоздаёт уже запущенный контейнер. Следующий старт (загрузка машины или `systemctl --user start qwen-image.service`) поднимает его в обеих сетях. `start` сейчас остановит текущий процесс и заново загрузит модель.
+`podman compose up -d` on an already running service recreates the container and loads the model again. Logs: `podman compose logs -f`.
 
 ---
 
@@ -195,28 +191,28 @@ Quadlet сам попадает в `default.target` (`WantedBy`). Отдельн
 
 ### `POST /api/generate` — `multipart/form-data`
 
-| Поле | Тип | По умолчанию | Описание |
+| Field | Type | Default | Description |
 |---|---|---|---|
-| `prompt` | string | — | Обязательный, только на английском (кириллица отклоняется) |
-| `negative_prompt` | string | `" "` | Тоже на английском |
-| `images` | file[] | — | До 10 файлов: JPEG/PNG/WEBP/BMP, суммарно до `MAX_UPLOAD_MB` |
-| `size_mode` | string | — | `preset` или `custom`. Без поля работает старый `resolution` |
-| `quality` | string | `high` | При `size_mode=preset`: `high` (~2K) или `medium` (те же пропорции, около 1024²) |
-| `aspect` | string | `1:1` | При `size_mode=preset`: `1:1`, `4:3`, `3:4`, `3:2`, `2:3`, `16:9`, `9:16` |
-| `width`, `height` | int | — | При `size_mode=custom`: каждая сторона 32…3000 px, затем вниз до кратной 32 |
-| `resolution` | string | `2048x2048` | Старый вход: ключ пресета или `ШxВ` в тех же пределах 32…3000 |
+| `prompt` | string | — | Required, English only (Cyrillic is rejected) |
+| `negative_prompt` | string | `" "` | English as well |
+| `images` | file[] | — | Up to 10 files: JPEG/PNG/WEBP/BMP, together up to `MAX_UPLOAD_MB` |
+| `size_mode` | string | — | `preset` or `custom`. Without the field, the old `resolution` input still works |
+| `quality` | string | `high` | With `size_mode=preset`: `high` (~2K) or `medium` (same aspect, about 1024²) |
+| `aspect` | string | `1:1` | With `size_mode=preset`: `1:1`, `4:3`, `3:4`, `3:2`, `2:3`, `16:9`, `9:16` |
+| `width`, `height` | int | — | With `size_mode=custom`: each side 32…3000 px, then rounded down to a multiple of 32 |
+| `resolution` | string | `2048x2048` | Legacy input: a preset key or `WxH` in the same 32…3000 range |
 | `steps` | int | 40 | 1…`MAX_STEPS` |
-| `true_cfg_scale` | float | 1.0 | 1.0…10.0. `1.0` — без guidance, штатный режим 2.1 |
-| `seed` | int | `-1` | `-1` — случайный |
+| `true_cfg_scale` | float | 1.0 | 1.0…10.0. `1.0` means no guidance, the normal mode for 2.1 |
+| `seed` | int | `-1` | `-1` means random |
 
-Снаружи запросы идут на `https://image.filenkov.store/api/generate` и требуют сессию gateway с ролью `image`.
-Для отладки оператором — изнутри сети, напрямую на `http://qwen-image:8000`:
+From outside, requests go to `https://image.filenkov.store/api/generate` and need a gateway session with the `image` role.
+For an operator debug session, from inside the network, call `http://qwen-image:8000` directly:
 
 ```bash
-podman run --rm --network qwen_image_gen_network --security-opt=label=disable -v "$PWD":/work:ro -w /work docker.io/curlimages/curl -X POST http://qwen-image:8000/api/generate -F "prompt=A cinematic portrait of the person, soft rim light, 85mm lens" -F "resolution=2048x2048" -F "steps=40" -F "true_cfg_scale=1" -F "images=@face1.jpg" -F "images=@face2.jpg" > result.json
+podman run --rm --network qwen_image_gen_network -v "$PWD":/work:ro -w /work docker.io/curlimages/curl -X POST http://qwen-image:8000/api/generate -F "prompt=A cinematic portrait of the person, soft rim light, 85mm lens" -F "resolution=2048x2048" -F "steps=40" -F "true_cfg_scale=1" -F "images=@face1.jpg" -F "images=@face2.jpg" > result.json
 ```
 
-Ответ после удачного сохранения в WebStorage:
+Response after a successful save to WebStorage:
 
 ```json
 {
@@ -230,101 +226,112 @@ podman run --rm --network qwen_image_gen_network --security-opt=label=disable -v
 }
 ```
 
-Если `X-Auth-User-Id` не UUID, или WebStorage ответил ошибкой, оборвался по таймауту или недоступен, генерация всё равно `200`: `saved` равен `false`, в `storage_error` текст ошибки, `storage_id` нет, а `images` по-прежнему указывают на локальный PNG.
+If `X-Auth-User-Id` is not a UUID, or WebStorage returned an error, timed out, or was unreachable, generation is still `200`: `saved` is `false`, `storage_error` is the error text, there is no `storage_id`, and `images` still point at the local PNG.
 
-Ошибки валидации — `400`, недоступность или OOM пайплайна — `503`, превышение размера загрузки — `413`. В этих случаях WebStorage не вызывается.
+Validation errors are `400`, a pipeline that is unavailable or out of memory is `503`, and an upload that is too large is `413`. WebStorage is not called in those cases.
 
 ### `POST /api/customize` — `multipart/form-data`
 
-Правка одного фото. В форме нет разрешения: размер берётся из файла. Ответ — тот же HxW.
+Edits one photo. The form has no resolution: the size comes from the file. The response is the same width and height.
 
-| Поле | Тип | По умолчанию | Описание |
+| Field | Type | Default | Description |
 |---|---|---|---|
-| `system_prompt` | string | — | Обязательный, только на английском. Что поправить на фото |
-| `negative_prompt` | string | `""` | Тоже на английском |
-| `image` | file | — | Ровно один файл: JPEG/PNG/WEBP/BMP |
+| `system_prompt` | string | — | Required, English only. What to change in the photo |
+| `negative_prompt` | string | `""` | English as well |
+| `image` | file | — | Exactly one file: JPEG/PNG/WEBP/BMP |
 | `steps` | int | 40 | 1…`MAX_STEPS` |
 | `true_cfg_scale` | float | 1.0 | 1.0…10.0 |
-| `seed` | int | `-1` | `-1` — случайный |
+| `seed` | int | `-1` | `-1` means random |
 
-Подгонка под кратность 32 и лимит стороны, и возврат результата к исходному HxW, спрятаны в `PhotoFrame` (`app/imaging.py`). В JSON `width` и `height` — размер загруженного фото, не промежуточный кадр модели.
+Fitting to a multiple of 32 and the side limit, then restoring the result to the original width and height, is hidden in `PhotoFrame` (`app/imaging.py`). In the JSON, `width` and `height` are the uploaded photo's size, not the intermediate model frame.
 
-### Остальные эндпоинты
+### Other endpoints
 
-| Метод | Путь | Назначение |
+| Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/` | Веб-форма генерации |
-| `GET` | `/customize` | Веб-форма кастомизации одного фото |
-| `GET` | `/healthz` | Статус, режим памяти, ошибка загрузки модели |
-| `GET` | `/api/config` | Лимиты и список пресетов разрешения |
-| `GET` | `/outputs/<name>` | Готовое изображение (хранятся последние `KEEP_OUTPUTS` штук) |
+| `GET` | `/` | Web form for generation |
+| `GET` | `/customize` | Web form for customizing one photo |
+| `GET` | `/healthz` | Status, memory mode, model load error |
+| `GET` | `/api/config` | Limits and the list of resolution presets |
+| `GET` | `/outputs/<name>` | Finished image (the latest `KEEP_OUTPUTS` files are kept) |
 
 ---
 
-## Структура
+## Layout
 
 ```
 app/
-  config.py      снимок настроек из окружения
-  offload.py     прокси текстового энкодера (веса в RAM, интерфейс «как на GPU»)
-  generator.py   загрузка пайплайна, режимы памяти, генерация под GPU-локом
-  imaging.py     пресеты разрешений, валидация загрузок, сохранение результатов
-  routes.py      веб-форма и JSON API
-  __init__.py    фабрика приложения, фоновая предзагрузка модели
-tests/           pytest-набор, работает без GPU и ML-зависимостей
-wsgi.py          точка входа gunicorn
-requirements-dev.txt  зависимости для тестов
+  config.py      snapshot of settings from the environment
+  offload.py     text-encoder proxy (weights in RAM, interface "as if on GPU")
+  generator.py   pipeline load, memory modes, generation under the GPU lock
+  imaging.py     resolution presets, upload validation, saving results
+  routes.py      web form and JSON API
+  __init__.py    application factory, background model preload
+tests/           pytest suite, runs without a GPU and without ML dependencies
+wsgi.py          gunicorn entry point
+pyproject.toml   web dependencies, ml group (torch cu126), and dev group
+Dockerfile       CUDA 12.6 + uv image; gunicorn listens on 0.0.0.0:8000
+compose.yaml     two external networks, GPU, volumes, shm 8gb, memory 64g; no host port
 ```
 
-Генерация сериализована `threading.Lock`: одна карта — одна задача за раз, параллельные HTTP-запросы ждут
-очереди, а не дерутся за VRAM. Поэтому gunicorn запускается с `--workers 1 --threads 4 --timeout 0`.
+Generation is serialized with `threading.Lock`: one card, one job at a time. Concurrent HTTP requests wait
+in the queue instead of fighting over VRAM. That is why gunicorn starts with `--workers 1 --threads 4 --timeout 0`.
 
 ---
 
-## Тесты
+## Tests
 
-Тесты подменяют генератор заглушкой: torch, diffusers и GPU не нужны.
+Tests replace the generator with a stub: torch, diffusers, and a GPU are not required.
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+uv sync
 ```
 
 ```bash
-.venv/bin/pytest
+uv run pytest
 ```
 
-Смоук-тест сети podman запускается только явно. Нужен локально собранный образ `qwen-image-service:latest`, GPU не нужен:
+The Podman network smoke test runs only when asked. It needs a locally built image `qwen-image-service:latest`. A GPU is not required:
 
 ```bash
-RUN_PODMAN_TESTS=1 .venv/bin/pytest -m podman
+RUN_PODMAN_TESTS=1 uv run pytest -m podman
 ```
 
 ---
 
-## Диагностика
+## Documentation
 
-**`CUDA out of memory`** — уберите лишние референсы, опустите разрешение до `1024x1024` и оставьте `true_cfg_scale=1`.
-Десять фото при guidance выше 1 держат два KV-кэша и не влезают в 32 GB. Затем `MEMORY_MODE=offload`.
-Проверьте, что VRAM не занята посторонним процессом: `nvidia-smi`.
+- [API contract](docs/api-contract.md)
+- [Design](docs/design.md)
+- [Architecture decisions](docs/adr/)
+- [Tests](docs/tests.md)
 
-**`module diffusers has no attribute QwenImage…Pipeline` / `Cannot find class …` / `KeyError` при загрузке** — установленный diffusers старше модели.
-В `requirements-ml.txt` закрепите diffusers на свежий коммит main:
-`diffusers @ https://github.com/huggingface/diffusers/archive/<sha>.tar.gz` (git в образе не нужен)
-и пересоберите образ. Так уже сделано для `QwenImage21Pipeline` (Qwen-Image-2.1).
+---
 
-**`не принимает изображения на вход`** — выбранный `MODEL_ID` указывает на text-to-image-вариант без
-image-условия. Возьмите edit-ревизию модели или уберите загрузку фото.
+## Diagnostics
 
-**Процесс убит OOM-killer'ом при старте или на референсах** — энкодер ещё в RAM. Проверьте
-`TEXT_ENCODER_DTYPE=float16` и `TEXT_ENCODER_GPU_LAYERS` (24 по умолчанию). `MEMORY_MODE=fp16`
-оставляет DiT на 14 GB VRAM и почти весь энкодер в RAM — на референсах так и упираетесь в RAM.
-Не хватило лимита контейнера — поднимите `--memory`.
+**`CUDA out of memory`** — drop extra references, lower the resolution to `1024x1024`, and leave `true_cfg_scale=1`.
+Ten photos with guidance above 1 keep two KV caches and do not fit in 32 GB. Then set `MEMORY_MODE=offload`.
+Check that another process is not holding VRAM: `nvidia-smi`.
 
-**`RuntimeError: "addmm_impl_cpu_" not implemented for 'Half'`** — старый CPU-бэкенд PyTorch не умеет fp16
-на CPU. Вернитесь к `TEXT_ENCODER_DTYPE=float32`.
+**`module diffusers has no attribute QwenImage…Pipeline` / `Cannot find class …` / `KeyError` while loading** — the installed diffusers is older than the model.
+In the `ml` group of `pyproject.toml`, pin diffusers to a fresh main commit:
+`diffusers @ https://github.com/huggingface/diffusers/archive/<sha>.tar.gz` (the image does not need git)
+and rebuild the image (`uv lock`, then `podman build`). That is already how `QwenImage21Pipeline` (Qwen-Image-2.1) is pinned.
 
-**Медленно, несколько минут на кадр** — ожидаемо для 2048 и 40 шагов на V100 без FlashAttention.
-`true_cfg_scale` выше 1 удваивает проход трансформера; для 2.1 оставляйте 1. Разрешение `1024x1024` заметно быстрее.
+**The model does not accept images** — the chosen `MODEL_ID` points at a text-to-image variant with no
+image condition. Use an edit revision of the model, or stop uploading photos.
 
-**Веса качаются каждый запуск** — не подключён том `qwen-hf-cache:/data/huggingface` или `HF_HOME` в `.env`
-указывает не туда.
+**The process is killed by the OOM killer at start or on references** — the encoder is still in RAM. Check
+`TEXT_ENCODER_DTYPE=float16` and `TEXT_ENCODER_GPU_LAYERS` (24 by default). `MEMORY_MODE=fp16`
+leaves the DiT at 14 GB of VRAM and almost the whole encoder in RAM, so references run out of RAM.
+If the container limit is too low, raise `mem_limit` in `compose.yaml` (or `--memory` on `podman run`).
+
+**`RuntimeError: "addmm_impl_cpu_" not implemented for 'Half'`** — an old PyTorch CPU backend cannot do fp16
+on CPU. Go back to `TEXT_ENCODER_DTYPE=float32`.
+
+**Slow, several minutes per frame** — expected for 2048 and 40 steps on a V100 without FlashAttention.
+`true_cfg_scale` above 1 doubles the transformer pass; for 2.1 leave it at 1. Resolution `1024x1024` is noticeably faster.
+
+**Weights download on every start** — the volume `qwen-hf-cache:/data/huggingface` is not attached, or `HF_HOME` in `.env`
+points somewhere else.

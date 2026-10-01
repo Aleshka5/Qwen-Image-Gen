@@ -37,7 +37,7 @@ class Settings:
     pipeline_class: str = os.getenv("PIPELINE_CLASS", "auto")
 
     # --- размещение и точность ------------------------------------------
-    # fp16 | int8 | offload  (см. README, раздел "Режимы памяти")
+    # fp16 | int8 | offload  (see README, "Memory modes")
     memory_mode: str = os.getenv("MEMORY_MODE", "int8").strip().lower()
     device: str = os.getenv("DEVICE", "cuda")
     text_encoder_device: str = os.getenv("TEXT_ENCODER_DEVICE", "cpu")
