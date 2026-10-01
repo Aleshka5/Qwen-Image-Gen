@@ -9,6 +9,11 @@
   const gallery = document.getElementById("gallery");
   const meta = document.getElementById("meta");
   const storageError = document.getElementById("storage-error");
+  const sizePreset = document.getElementById("size-preset");
+  const sizeCustom = document.getElementById("size-custom");
+  const quality = document.getElementById("quality");
+  const aspect = document.getElementById("aspect");
+  const sizePreview = document.getElementById("size-preview");
 
   const MAX_IMAGES = Number(document.body.dataset.maxImages || 10);
   /** @type {{file: File, url: string}[]} */
@@ -101,6 +106,22 @@
     button.addEventListener("dragstart", (event) => event.preventDefault());
     return button;
   };
+
+  const syncSize = () => {
+    const custom = form.elements.size_mode.value === "custom";
+    sizePreset.hidden = custom;
+    sizeCustom.hidden = !custom;
+    for (const el of sizePreset.querySelectorAll("select, input")) el.disabled = custom;
+    for (const el of sizeCustom.querySelectorAll("select, input")) el.disabled = !custom;
+    if (!custom) {
+      const option = aspect.selectedOptions[0];
+      sizePreview.textContent = option?.dataset[quality.value] || "";
+    }
+  };
+  for (const radio of form.elements.size_mode) radio.addEventListener("change", syncSize);
+  quality.addEventListener("change", syncSize);
+  aspect.addEventListener("change", syncSize);
+  syncSize();
 
   fileInput.addEventListener("change", () => {
     selected.forEach((item) => URL.revokeObjectURL(item.url));

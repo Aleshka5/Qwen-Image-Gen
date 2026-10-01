@@ -15,13 +15,18 @@ from .generator import GenerationRequest, PipelineError, generator
 from .logbuf import live_logs
 from .webstorage import StorageError, save_generated
 from .imaging import (
+    ASPECT_RATIOS,
+    GEN_MAX_SIDE,
+    GEN_MIN_SIDE,
     RESOLUTION_PRESETS,
     ValidationError,
     load_uploads,
     output_path,
+    parse_custom_size,
     parse_resolution,
     prepare_photo,
     save_outputs,
+    size_from_quality,
 )
 
 log = logging.getLogger(__name__)
@@ -88,6 +93,16 @@ def _png_bytes(image) -> bytes:
     return buf.getvalue()
 
 
+def _generation_size(form) -> tuple[int, int]:
+    """Пресет (качество + соотношение), свои H/W, либо старое поле resolution."""
+    mode = (form.get("size_mode") or "").strip().lower()
+    if mode == "custom":
+        return parse_custom_size(form.get("width"), form.get("height"))
+    if mode == "preset":
+        return size_from_quality(form.get("quality"), form.get("aspect"))
+    return parse_resolution(form.get("resolution"))
+
+
 def _parse_cfg(raw: str | None) -> float:
     raw = (raw or "").strip()
     if not raw:
@@ -105,7 +120,9 @@ def _parse_cfg(raw: str | None) -> float:
 def index() -> str:
     return render_template(
         "index.html",
-        presets=RESOLUTION_PRESETS,
+        aspects=ASPECT_RATIOS,
+        gen_min_side=GEN_MIN_SIDE,
+        gen_max_side=GEN_MAX_SIDE,
         max_images=settings.max_images,
         default_steps=settings.default_steps,
         max_steps=settings.max_steps,
@@ -168,7 +185,7 @@ def api_generate():
     form = request.form
     prompt = _clean_prompt(form.get("prompt"), field="prompt", required=True)
     negative = _clean_prompt(form.get("negative_prompt"), field="negative prompt", required=False)
-    width, height = parse_resolution(form.get("resolution"))
+    width, height = _generation_size(form)
     steps = _parse_int(
         form.get("steps"), field="steps", default=settings.default_steps, low=1, high=settings.max_steps
     )

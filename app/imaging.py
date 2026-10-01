@@ -28,21 +28,52 @@ class ResolutionPreset:
     height: int
 
 
-# Нативные размеры Qwen-Image-2.1. Все стороны кратны 32.
-# 1024 — запас по VRAM на V100, когда 2K с несколькими референсами не влезает.
-RESOLUTION_PRESETS: tuple[ResolutionPreset, ...] = (
-    ResolutionPreset("2048x2048", "1:1 — 2048×2048", 2048, 2048),
-    ResolutionPreset("2400x1792", "4:3 — 2400×1792", 2400, 1792),
-    ResolutionPreset("1792x2400", "3:4 — 1792×2400", 1792, 2400),
-    ResolutionPreset("2528x1696", "3:2 — 2528×1696", 2528, 1696),
-    ResolutionPreset("1696x2528", "2:3 — 1696×2528", 1696, 2528),
-    ResolutionPreset("2752x1536", "16:9 — 2752×1536", 2752, 1536),
-    ResolutionPreset("1536x2752", "9:16 — 1536×2752", 1536, 2752),
-    ResolutionPreset("1024x1024", "1:1 — 1024×1024 (экономно)", 1024, 1024),
+@dataclass(frozen=True, slots=True)
+class AspectRatio:
+    """Соотношение сторон. High — нативный кадр ~2K, Medium — те же пропорции около 1024²."""
+
+    key: str
+    width: int
+    height: int
+
+    def pixels(self, quality: str) -> tuple[int, int]:
+        if quality == "high":
+            return self.width, self.height
+        if quality == "medium":
+            return self.width // 2, self.height // 2
+        raise ValidationError("Качество: high или medium")
+
+
+# Нативные размеры Qwen-Image-2.1 (~2K). Medium — ровно половина, около 1024².
+# Все стороны кратны 64, поэтому medium остаётся кратным 32.
+ASPECT_RATIOS: tuple[AspectRatio, ...] = (
+    AspectRatio("1:1", 2048, 2048),
+    AspectRatio("4:3", 2400, 1792),
+    AspectRatio("3:4", 1792, 2400),
+    AspectRatio("3:2", 2528, 1696),
+    AspectRatio("2:3", 1696, 2528),
+    AspectRatio("16:9", 2752, 1536),
+    AspectRatio("9:16", 1536, 2752),
+)
+
+# Свои ширина и высота на форме генерации. MIN_SIDE/MAX_SIDE — только подгонка фото кастомизации.
+GEN_MIN_SIDE = 32
+GEN_MAX_SIDE = 3000
+
+_ASPECTS_BY_KEY = {ratio.key: ratio for ratio in ASPECT_RATIOS}
+
+
+def _preset(quality: str, ratio: AspectRatio) -> ResolutionPreset:
+    width, height = ratio.pixels(quality)
+    return ResolutionPreset(f"{width}x{height}", f"{ratio.key} — {width}×{height}", width, height)
+
+
+RESOLUTION_PRESETS: tuple[ResolutionPreset, ...] = tuple(
+    _preset(quality, ratio) for quality in ("high", "medium") for ratio in ASPECT_RATIOS
 )
 
 _PRESETS_BY_KEY = {preset.key: preset for preset in RESOLUTION_PRESETS}
-_SIZE_RE = re.compile(r"^\s*(\d{3,5})\s*[x×*]\s*(\d{3,5})\s*$")
+_SIZE_RE = re.compile(r"^\s*(\d{2,4})\s*[x×*]\s*(\d{2,4})\s*$")
 
 
 class ValidationError(ValueError):
@@ -68,13 +99,42 @@ def parse_resolution(raw: str | None) -> tuple[int, int]:
     if not match:
         raise ValidationError(f"Не понимаю разрешение {raw!r}; ожидается «ширинаxвысота»")
 
-    width, height = int(match.group(1)), int(match.group(2))
-    for side, name in ((width, "ширина"), (height, "высота")):
-        if not settings.min_side <= side <= settings.max_side:
-            raise ValidationError(
-                f"{name.capitalize()} {side} вне диапазона "
-                f"{settings.min_side}–{settings.max_side} px"
-            )
+    return _checked_sides(int(match.group(1)), int(match.group(2)))
+
+
+def size_from_quality(quality: str | None, aspect: str | None) -> tuple[int, int]:
+    """Кадр для пары «качество + соотношение» с формы генерации."""
+    quality = (quality or "high").strip().lower()
+    aspect_key = (aspect or "1:1").strip()
+    ratio = _ASPECTS_BY_KEY.get(aspect_key)
+    if ratio is None:
+        known = ", ".join(item.key for item in ASPECT_RATIOS)
+        raise ValidationError(f"Неизвестное соотношение {aspect_key!r}; ожидается {known}")
+    return ratio.pixels(quality)
+
+
+def parse_custom_size(width_raw: str | None, height_raw: str | None) -> tuple[int, int]:
+    """Свои ширина и высота: 32…3000, затем кратность 32."""
+    return _checked_sides(_parse_side(width_raw, "Ширина"), _parse_side(height_raw, "Высота"))
+
+
+def _parse_side(raw: str | None, name: str) -> int:
+    text = (raw or "").strip()
+    if not text:
+        raise ValidationError(f"{name}: укажите число пикселей")
+    try:
+        value = int(text)
+    except ValueError as exc:
+        raise ValidationError(f"{name}: ожидается целое число") from exc
+    if not GEN_MIN_SIDE <= value <= GEN_MAX_SIDE:
+        raise ValidationError(f"{name} {value} вне диапазона {GEN_MIN_SIDE}–{GEN_MAX_SIDE} px")
+    return value
+
+
+def _checked_sides(width: int, height: int) -> tuple[int, int]:
+    for side, name in ((width, "Ширина"), (height, "Высота")):
+        if not GEN_MIN_SIDE <= side <= GEN_MAX_SIDE:
+            raise ValidationError(f"{name} {side} вне диапазона {GEN_MIN_SIDE}–{GEN_MAX_SIDE} px")
     # стороны выравниваем уже после проверки, чтобы в ошибке было исходное число
     return align(width), align(height)
 

@@ -104,6 +104,72 @@ def test_generate_and_download(client, fake_generator, output_dir):
         assert served.data.startswith(b"\x89PNG")
 
 
+def test_index_offers_quality_aspect_and_custom_size(client):
+    page = client.get("/").get_data(as_text=True)
+    assert 'name="size_mode" value="preset"' in page
+    assert 'name="size_mode" value="custom"' in page
+    assert 'name="quality"' in page
+    assert "Среднее (~1K)" in page
+    for aspect in ("1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"):
+        assert f'value="{aspect}"' in page
+    assert 'data-high="2752×1536"' in page
+    assert 'data-medium="1376×768"' in page
+    assert 'name="height"' in page and 'name="width"' in page
+    assert 'min="32"' in page and 'max="3000"' in page
+
+
+@pytest.mark.parametrize(
+    ("form", "size"),
+    [
+        (
+            {"size_mode": "preset", "quality": "high", "aspect": "16:9"},
+            (2752, 1536),
+        ),
+        (
+            {"size_mode": "preset", "quality": "medium", "aspect": "4:3"},
+            (1200, 896),
+        ),
+        (
+            {"size_mode": "preset", "quality": "medium", "aspect": "1:1"},
+            (1024, 1024),
+        ),
+        (
+            {"size_mode": "custom", "width": "1000", "height": "750"},
+            (992, 736),
+        ),
+        (
+            {"size_mode": "custom", "width": "3000", "height": "32"},
+            (2976, 32),
+        ),
+    ],
+)
+def test_generate_size_modes(client, fake_generator, form, size):
+    response = client.post(
+        "/api/generate",
+        data={"prompt": "A red fox in snow", "seed": "1", **form},
+    )
+    assert response.status_code == 200, response.get_json()
+    req = fake_generator.requests[-1]
+    assert (req.width, req.height) == size
+
+
+@pytest.mark.parametrize(
+    "form",
+    [
+        {"size_mode": "custom", "width": "16", "height": "1024"},
+        {"size_mode": "custom", "width": "3001", "height": "1024"},
+        {"size_mode": "custom", "width": "1024", "height": ""},
+        {"size_mode": "preset", "quality": "high", "aspect": "5:4"},
+        {"size_mode": "preset", "quality": "ultra", "aspect": "1:1"},
+    ],
+)
+def test_generate_size_rejected(client, fake_generator, form):
+    response = client.post("/api/generate", data={"prompt": "A red fox in snow", **form})
+    assert response.status_code == 400
+    assert response.get_json()["error"]
+    assert fake_generator.requests == []
+
+
 @pytest.mark.parametrize(
     "form",
     [

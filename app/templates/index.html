@@ -36,16 +36,56 @@
       <div id="previews" class="previews"></div>
     </div>
 
-    <div class="grid">
-      <label class="field">
-        <span>Разрешение</span>
-        <select name="resolution">
-          {% for preset in presets %}
-            <option value="{{ preset.key }}">{{ preset.label }}</option>
-          {% endfor %}
-        </select>
-      </label>
+    <fieldset class="size">
+      <legend>Размер</legend>
+      <div class="choice-row">
+        <label class="choice">
+          <input type="radio" name="size_mode" value="preset" checked>
+          Качество и соотношение
+        </label>
+        <label class="choice">
+          <input type="radio" name="size_mode" value="custom">
+          Свои размеры
+        </label>
+      </div>
 
+      <div id="size-preset">
+        <div class="grid">
+          <label class="field">
+            <span>Качество</span>
+            <select name="quality" id="quality">
+              <option value="high" selected>Высокое (~2K)</option>
+              <option value="medium">Среднее (~1K)</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Соотношение сторон</span>
+            <select name="aspect" id="aspect">
+              {% for ratio in aspects %}
+                <option value="{{ ratio.key }}"
+                        data-high="{{ ratio.width }}×{{ ratio.height }}"
+                        data-medium="{{ ratio.width // 2 }}×{{ ratio.height // 2 }}">{{ ratio.key }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </div>
+        <p id="size-preview" class="muted">2048×2048</p>
+      </div>
+
+      <div id="size-custom" class="grid" hidden>
+        <label class="field">
+          <span>Высота</span>
+          <input type="number" name="height" min="{{ gen_min_side }}" max="{{ gen_max_side }}" step="32" value="1024" inputmode="numeric">
+        </label>
+        <label class="field">
+          <span>Ширина</span>
+          <input type="number" name="width" min="{{ gen_min_side }}" max="{{ gen_max_side }}" step="32" value="1024" inputmode="numeric">
+        </label>
+        <p class="muted size-note">От {{ gen_min_side }} до {{ gen_max_side }} px. Сторона округляется вниз до кратной 32.</p>
+      </div>
+    </fieldset>
+
+    <div class="grid">
       <label class="field">
         <span>Шагов</span>
         <input type="number" name="steps" value="{{ default_steps }}" min="1" max="{{ max_steps }}">

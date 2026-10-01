@@ -200,7 +200,11 @@ Quadlet сам попадает в `default.target` (`WantedBy`). Отдельн
 | `prompt` | string | — | Обязательный, только на английском (кириллица отклоняется) |
 | `negative_prompt` | string | `" "` | Тоже на английском |
 | `images` | file[] | — | До 10 файлов: JPEG/PNG/WEBP/BMP, суммарно до `MAX_UPLOAD_MB` |
-| `resolution` | string | `2048x2048` | Ключ пресета или произвольное `ШxВ`. Стороны кратны 32, длинная — до `MAX_SIDE` (2752) |
+| `size_mode` | string | — | `preset` или `custom`. Без поля работает старый `resolution` |
+| `quality` | string | `high` | При `size_mode=preset`: `high` (~2K) или `medium` (те же пропорции, около 1024²) |
+| `aspect` | string | `1:1` | При `size_mode=preset`: `1:1`, `4:3`, `3:4`, `3:2`, `2:3`, `16:9`, `9:16` |
+| `width`, `height` | int | — | При `size_mode=custom`: каждая сторона 32…3000 px, затем вниз до кратной 32 |
+| `resolution` | string | `2048x2048` | Старый вход: ключ пресета или `ШxВ` в тех же пределах 32…3000 |
 | `steps` | int | 40 | 1…`MAX_STEPS` |
 | `true_cfg_scale` | float | 1.0 | 1.0…10.0. `1.0` — без guidance, штатный режим 2.1 |
 | `seed` | int | `-1` | `-1` — случайный |
