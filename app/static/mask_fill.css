@@ -1,0 +1,77 @@
+.mask-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.tool-btn {
+  width: auto;
+  background: var(--bg);
+  color: inherit;
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+}
+.tool-btn[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: transparent;
+  color: #fff;
+}
+.tool-btn:disabled {
+  cursor: not-allowed;
+}
+.brush-size {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.brush-size input[type="range"] {
+  width: 148px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  accent-color: var(--accent);
+}
+.mask-stage {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--bg);
+  user-select: none;
+}
+.mask-stage canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  touch-action: none;
+}
+#previews .ref-index {
+  height: auto;
+  white-space: nowrap;
+  padding: 0 6px;
+}
+.mask-stage.is-brush canvas { cursor: crosshair; }
+.mask-stage.is-eraser canvas { cursor: cell; }
+.mask-empty {
+  margin: 0;
+  padding: 36px 16px;
+  text-align: center;
+  color: var(--muted);
+}
+.mask-legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.swatch {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  border-radius: 4px;
+  background: rgba(79, 70, 229, 0.55);
+  border: 1px solid var(--border);
+}
+#submit:disabled { cursor: not-allowed; }
+#submit[aria-busy="true"]:disabled { cursor: progress; }
