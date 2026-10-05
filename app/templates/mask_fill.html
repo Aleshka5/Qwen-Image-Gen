@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Qwen-Image · заливка</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='mask_fill.css') }}">
+</head>
+<body data-max-images="{{ max_images|default(10) }}">
+<main class="wrap">
+  <header>
+    <h1>Qwen-Image</h1>
+    <p class="muted">{{ model_id|default("Qwen/Qwen-Image-2.1", true) }} · одно фото и маска · референсы с image 3 · промпт на английском</p>
+    <nav class="pages">
+      <a href="{{ url_for('web.index') }}">Генерация</a>
+      <a href="{{ url_for('web.customize') }}">Кастомизация</a>
+      <a href="/mask-fill" aria-current="page">Заливка</a>
+    </nav>
+  </header>
+
+  <form id="form" class="card" method="post" action="/api/mask-fill" enctype="multipart/form-data">
+    <div class="field">
+      <span>Фото</span>
+      <input type="file" id="image" name="image" accept="image/*" required>
+      <p class="muted">Это image 1. Закрасьте область, которую нужно заполнить: она уйдёт как image 2. Белое — меняем, остальное остаётся.</p>
+      <p id="photo-name" class="muted"></p>
+
+      <div class="mask-tools" role="toolbar" aria-label="Инструменты маски">
+        <button type="button" id="tool-brush" class="tool-btn" aria-pressed="true">Кисть</button>
+        <button type="button" id="tool-eraser" class="tool-btn" aria-pressed="false">Ластик</button>
+        <label class="brush-size">
+          <span>Размер кисти</span>
+          <input type="range" id="brush-size" min="4" max="96" value="28">
+          <span id="brush-size-value">28</span>
+        </label>
+        <button type="button" id="undo" class="tool-btn" disabled>Отменить</button>
+        <button type="button" id="clear-mask" class="tool-btn" disabled>Очистить</button>
+      </div>
+
+      <div id="mask-stage" class="mask-stage is-brush">
+        <p id="mask-empty" class="mask-empty">Выберите фото, затем проведите кистью по области заливки.</p>
+        <canvas id="mask-view" hidden aria-label="Фото и закрашенная область"></canvas>
+      </div>
+      <p class="muted mask-legend"><span class="swatch" aria-hidden="true"></span>Цвет на фото — только подсказка. На сервер уходит чёрно-белая маска того же размера.</p>
+    </div>
+
+    <div class="field">
+      <span>Референсные фото (до {{ (max_images|default(10)) - 2 }})</span>
+      <input type="file" id="images" name="images" accept="image/*" multiple>
+      <p class="muted">Порядок можно менять стрелками или перетаскиванием. Это image 3, image 4, … в промпте.</p>
+      <div id="previews" class="previews"></div>
+    </div>
+
+    <label class="field">
+      <span>Prompt (English)</span>
+      <textarea name="prompt" rows="4" required
+                placeholder="Replace the masked area on image 1, keep the face, clothes, and framing"></textarea>
+    </label>
+
+    <label class="field">
+      <span>Negative prompt (English, optional)</span>
+      <input type="text" name="negative_prompt" placeholder="blurry, extra fingers, watermark">
+    </label>
+
+    <div class="grid">
+      <label class="field">
+        <span>Шагов</span>
+        <input type="number" name="steps" value="{{ default_steps|default(40) }}" min="1" max="{{ max_steps|default(60) }}">
+      </label>
+
+      <label class="field">
+        <span>CFG (1 — без guidance)</span>
+        <input type="number" name="true_cfg_scale" value="{{ default_cfg|default(1) }}" min="1" max="10" step="0.1">
+      </label>
+
+      <label class="field">
+        <span>Seed (-1 — случайный)</span>
+        <input type="number" name="seed" value="-1" min="-1">
+      </label>
+    </div>
+
+    <button id="submit" type="submit" disabled>Залить</button>
+    <p id="status" class="status" hidden></p>
+    <pre id="logs" class="logs" hidden></pre>
+  </form>
+
+  <section id="result" class="card" hidden>
+    <h2>Результат</h2>
+    <p id="meta" class="muted"></p>
+    <div id="gallery" class="gallery"></div>
+    <p id="storage-error" class="status error" hidden></p>
+  </section>
+</main>
+<script src="{{ url_for('static', filename='mask_fill.js') }}" defer></script>
+</body>
+</html>
