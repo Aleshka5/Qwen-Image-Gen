@@ -28,6 +28,7 @@ from .imaging import (
     save_outputs,
     size_from_quality,
 )
+from .maskfill import prepare_mask_fill
 
 log = logging.getLogger(__name__)
 
@@ -135,6 +136,18 @@ def index() -> str:
 def customize() -> str:
     return render_template(
         "customize.html",
+        default_steps=settings.default_steps,
+        max_steps=settings.max_steps,
+        default_cfg=settings.default_true_cfg_scale,
+        model_id=settings.model_id,
+    )
+
+
+@bp.get("/mask-fill")
+def mask_fill() -> str:
+    return render_template(
+        "mask_fill.html",
+        max_images=settings.max_images,
         default_steps=settings.default_steps,
         max_steps=settings.max_steps,
         default_cfg=settings.default_true_cfg_scale,
@@ -291,6 +304,83 @@ def api_customize():
         width=frame.width,
         height=frame.height,
         images=[{"name": n, "url": url_for("web.output", name=n)} for n in names],
+    )
+
+
+@bp.post("/api/mask-fill")
+def api_mask_fill():
+    form = request.form
+    prompt = _clean_prompt(form.get("prompt"), field="prompt", required=True)
+    negative = _clean_prompt(form.get("negative_prompt"), field="negative prompt", required=False)
+    steps = _parse_int(
+        form.get("steps"), field="steps", default=settings.default_steps, low=1, high=settings.max_steps
+    )
+    cfg = _parse_cfg(form.get("true_cfg_scale"))
+    seed = _parse_seed(form.get("seed"))
+    frame = prepare_mask_fill(
+        request.files.getlist("image"),
+        request.files.getlist("mask"),
+        request.files.getlist("images"),
+    )
+
+    log.info(
+        "Заливка: фото %dx%d, модель %dx%d, steps=%d, cfg=%.1f, seed=%d, условий=%d",
+        frame.width,
+        frame.height,
+        frame.model_width,
+        frame.model_height,
+        steps,
+        cfg,
+        seed,
+        len(frame.images),
+    )
+
+    result = generator.generate(
+        GenerationRequest(
+            prompt=prompt,
+            negative_prompt=negative or settings.default_negative_prompt,
+            width=frame.model_width,
+            height=frame.model_height,
+            steps=steps,
+            true_cfg_scale=cfg,
+            seed=seed,
+            images=list(frame.images),
+        )
+    )
+
+    restored = [frame.restore(image) for image in result.images]
+    names = save_outputs(restored)
+    user_id = _valid_user_id(request.headers.get("X-Auth-User-Id"))
+    if user_id is None:
+        stored = {"saved": False, "storage_error": _NOT_SAVED_NO_USER}
+    else:
+        try:
+            storage_id = save_generated(
+                user_id=user_id,
+                email=_optional_text(request.headers.get("X-Auth-Email")),
+                prompt=prompt,
+                negative_prompt=negative,
+                seed=result.seed,
+                steps=steps,
+                true_cfg_scale=cfg,
+                width=frame.width,
+                height=frame.height,
+                duration=result.duration,
+                images=[_png_bytes(image) for image in frame.archive],
+                result_png=output_path(names[0]).read_bytes(),
+                result_name=names[0],
+            )
+        except StorageError as exc:
+            stored = {"saved": False, "storage_error": exc.reason}
+        else:
+            stored = {"saved": True, "storage_id": storage_id}
+    return jsonify(
+        seed=result.seed,
+        duration=round(result.duration, 2),
+        width=frame.width,
+        height=frame.height,
+        images=[{"name": n, "url": url_for("web.output", name=n)} for n in names],
+        **stored,
     )
 
 
