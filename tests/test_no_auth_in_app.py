@@ -1,7 +1,8 @@
 """Граница доверия: решение «пускать или нет» принимает Auth Gateway, приложение auth не содержит.
 
-Исключение — POST /api/generate: читает только X-Auth-User-Id и X-Auth-Email,
-чтобы сохранить прогон в WebStorage. Остальные заголовки и остальные маршруты по-прежнему не читают личность.
+Исключение — POST /api/generate и POST /api/mask-fill: читают только X-Auth-User-Id
+и X-Auth-Email, чтобы сохранить прогон в WebStorage. Остальные заголовки и остальные
+маршруты по-прежнему не читают личность.
 """
 
 from __future__ import annotations
@@ -28,11 +29,13 @@ REQUESTS = [
     ("GET", "/healthz", None),
     ("GET", "/", None),
     ("GET", "/customize", None),
+    ("GET", "/mask-fill", None),
     ("GET", "/api/config", None),
     ("GET", "/api/logs", None),
     ("POST", "/api/generate", {"prompt": "A lighthouse at dusk", "seed": "42", "resolution": "1024x1024"}),
     ("POST", "/api/generate", {"prompt": ""}),
     ("POST", "/api/customize", {"system_prompt": ""}),
+    ("POST", "/api/mask-fill", {"prompt": ""}),
 ]
 
 
@@ -70,7 +73,7 @@ def test_spoofed_auth_headers_and_cookies_are_ignored(app, method, path, data):
     plain = _send(app, method, path, data, spoof=False)
     spoofed = _send(app, method, path, data, spoof=True)
     assert _normalized(plain) == _normalized(spoofed)
-    if path == "/api/generate" and plain.status_code == 200:
+    if path in {"/api/generate", "/api/mask-fill"} and plain.status_code == 200:
         for response in (plain, spoofed):
             body = response.get_json()
             assert body["saved"] is False
@@ -156,8 +159,8 @@ def test_app_sources_exist():
 
 @pytest.mark.parametrize("pattern", FORBIDDEN_IN_APP, ids=lambda p: p.pattern)
 def test_app_contains_no_auth_code(pattern):
-    """request.headers допускается только внутри api_generate и только для двух заголовков."""
-    generate_lines = _api_generate_lines()
+    """request.headers допускается только внутри сохранения и только для двух заголовков."""
+    generate_lines = _save_view_lines()
     hits = []
     for path in _app_sources():
         rel = path.relative_to(ROOT)
@@ -180,8 +183,8 @@ def test_app_contains_no_auth_code(pattern):
 
 
 def test_identity_headers_only_on_generate_save_path():
-    """X-Auth-User-Id и X-Auth-Email — только чтение в api_generate и пересылка в webstorage."""
-    generate_lines = _api_generate_lines()
+    """X-Auth-User-Id и X-Auth-Email — только чтение в сохранении и пересылка в webstorage."""
+    generate_lines = _save_view_lines()
     violations = []
     for path in _app_sources():
         rel = path.relative_to(ROOT)
@@ -200,7 +203,7 @@ def test_identity_headers_only_on_generate_save_path():
                 continue
             if rel.name == "routes.py":
                 if lineno not in generate_lines or (header_read and not tokens):
-                    violations.append(f"{rel}:{lineno}: identity outside api_generate")
+                    violations.append(f"{rel}:{lineno}: identity outside the save views")
             elif rel.name != "webstorage.py" or header_read:
                 violations.append(f"{rel}:{lineno}: identity outside the save client")
         if path.suffix == ".py":
@@ -216,19 +219,26 @@ def _identity_tokens(line: str) -> list[str]:
     return found
 
 
-def _api_generate_lines() -> range:
+_SAVE_VIEWS = frozenset({"api_generate", "api_mask_fill"})
+
+
+def _save_view_lines() -> set[int]:
     source = (ROOT / "app" / "routes.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
-    generate = next(
-        node
+    found = {
+        node.name: node
         for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "api_generate"
-    )
-    return range(generate.lineno, (generate.end_lineno or generate.lineno) + 1)
+        if isinstance(node, ast.FunctionDef) and node.name in _SAVE_VIEWS
+    }
+    assert set(found) == set(_SAVE_VIEWS)
+    lines: set[int] = set()
+    for node in found.values():
+        lines.update(range(node.lineno, (node.end_lineno or node.lineno) + 1))
+    return lines
 
 
-def _ast_identity_violations(rel: Path, source: str, generate_lines: range) -> list[str]:
-    """Чтение flask-заголовков — только .get двух имён внутри api_generate. Вызов save — только оттуда."""
+def _ast_identity_violations(rel: Path, source: str, generate_lines: set[int]) -> list[str]:
+    """Чтение flask-заголовков — только .get двух имён внутри сохранения. Вызов save — только оттуда."""
     tree = ast.parse(source)
     parents: dict[ast.AST, ast.AST] = {}
     for node in ast.walk(tree):
@@ -244,10 +254,10 @@ def _ast_identity_violations(rel: Path, source: str, generate_lines: range) -> l
                 or node.lineno not in generate_lines
                 or header_name not in _ALLOWED_IDENTITY
             ):
-                violations.append(f"{rel}:{node.lineno}: request.headers outside the generate read")
+                violations.append(f"{rel}:{node.lineno}: request.headers outside the save views")
         if isinstance(node, ast.Call) and _call_name(node) == "save_generated":
             if rel.name != "routes.py" or node.lineno not in generate_lines:
-                violations.append(f"{rel}:{node.lineno}: save_generated outside api_generate")
+                violations.append(f"{rel}:{node.lineno}: save_generated outside the save views")
     return violations
 
 

@@ -9,10 +9,12 @@ from app.imaging import RESOLUTION_PRESETS
 EXPECTED_ROUTES = {
     ("/", frozenset({"GET"})),
     ("/customize", frozenset({"GET"})),
+    ("/mask-fill", frozenset({"GET"})),
     ("/healthz", frozenset({"GET"})),
     ("/api/config", frozenset({"GET"})),
     ("/api/generate", frozenset({"POST"})),
     ("/api/customize", frozenset({"POST"})),
+    ("/api/mask-fill", frozenset({"POST"})),
     ("/api/logs", frozenset({"GET"})),
     ("/outputs/<path:name>", frozenset({"GET"})),
     ("/static/<path:filename>", frozenset({"GET"})),
