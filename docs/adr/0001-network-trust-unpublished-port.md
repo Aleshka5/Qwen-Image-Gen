@@ -6,9 +6,9 @@ Accepted
 
 ## Context
 
-The service is one Flask/gunicorn process with a form, `POST /api/generate`, and `GET /healthz`. A frame on the V100 takes minutes. Browsers do not open this process. They open the Auth Gateway at `https://image.filenkov.store`. The gateway proxies to `http://qwen-image:8000` and allows the `image` role (`FAMILY` or `ADMIN` in User-Service). The gateway serves `GET /healthz` without a role so an operator can probe it; the application also leaves that path unchecked.
+The service is one Flask/gunicorn process with HTML forms, `POST /api/generate`, `POST /api/mask-fill`, and `GET /healthz`. A frame on the V100 takes minutes. Browsers do not open this process. They open the Auth Gateway at `https://image.filenkov.store`. The gateway proxies to `http://qwen-image:8000` and allows the `image` role (`FAMILY` or `ADMIN` in User-Service). The gateway serves `GET /healthz` without a role so an operator can probe it; the application also leaves that path unchecked.
 
-`app/` has no login, session, JWT check, or call to User-Service. `tests/test_no_auth_in_app.py` compares responses with spoofed `Authorization`, cookie, and `X-Auth-*` headers: aside from archiving a generation, they change nothing. The exception is reading `X-Auth-User-Id` and `X-Auth-Email` on `POST /api/generate` (ADR 0005). The gateway strips client-supplied `X-Auth-*` before proxying. A request that reached the container is already allowed.
+`app/` has no login, session, JWT check, or call to User-Service. `tests/test_no_auth_in_app.py` compares responses with spoofed `Authorization`, cookie, and `X-Auth-*` headers: aside from archiving a generation or a mask fill, they change nothing. The exception is reading `X-Auth-User-Id` and `X-Auth-Email` on `POST /api/generate` and `POST /api/mask-fill` (ADR 0005), with the same save rules on both. `GET /mask-fill` does not read those headers. The gateway strips client-supplied `X-Auth-*` before proxying. A request that reached the container is already allowed.
 
 Publishing `-p 8000:8000` would put the GPU form on a host interface next to the gateway, and the role check would be bypassed.
 

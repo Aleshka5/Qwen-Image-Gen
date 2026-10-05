@@ -10,7 +10,7 @@ The suite in `tests/` runs under pytest and, by default, needs no GPU, torch, di
 |---|---|
 | `tests/conftest.py` | Stub for `app.generator`, output directory, Flask client |
 | `tests/test_routes.py` | URL map, generate, customize, errors, archive |
-| `tests/test_no_auth_in_app.py` | No login; `X-Auth-*` only when saving a generation |
+| `tests/test_no_auth_in_app.py` | No login; `X-Auth-User-Id` and `X-Auth-Email` are read only in `api_generate` and `api_mask_fill`, to sign the WebStorage save |
 | `tests/test_imaging.py` | `fit_model_size` and `PhotoFrame` |
 | `tests/test_generate_form.py` | The form shows `storage_error` only when `saved` is false |
 | `tests/test_deploy_docs.py` | No published port, two networks, healthcheck, gunicorn |

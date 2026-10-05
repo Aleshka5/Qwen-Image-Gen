@@ -1,16 +1,16 @@
 # HTTP API contract
 
-Behavior is taken from `app/routes.py`, `app/imaging.py`, `app/webstorage.py`, `app/logbuf.py`, `app/__init__.py`, and `tests/test_routes.py`. The service is Flask behind gunicorn. From outside, the browser uses `https://image.filenkov.store` (Auth Gateway). This process listens on `0.0.0.0:8000` inside the container and does not log anyone in.
+Behavior is taken from `app/routes.py`, `app/imaging.py`, `app/maskfill.py`, `app/webstorage.py`, `app/logbuf.py`, `app/__init__.py`, and `tests/test_routes.py`. The service is Flask behind gunicorn. From outside, the browser uses `https://image.filenkov.store` (Auth Gateway). This process listens on `0.0.0.0:8000` inside the container and does not log anyone in.
 
 Path, header, and JSON field names below are the wire identifiers. Some validation error strings returned by the code are still Russian; they are quoted as the body the client receives.
 
 ## Common rules
 
-- The body of `POST /api/generate` and `POST /api/customize` is `multipart/form-data`.
+- The body of `POST /api/generate`, `POST /api/customize`, and `POST /api/mask-fill` is `multipart/form-data`.
 - Successful JSON does not sort keys (`JSON_SORT_KEYS = false`).
 - Total body size is limited by `MAX_UPLOAD_MB` (default 60). That value is Flask `MAX_CONTENT_LENGTH`.
 - The application has no login, session, cookie, JWT, or role check. The gateway decides who is allowed. A request that reached the process is already allowed.
-- Identity headers are read only by `POST /api/generate`, and only to sign the archive. `GET` routes and `POST /api/customize` do not use them.
+- Identity headers are read by `POST /api/generate` and `POST /api/mask-fill`, and only to sign the archive. `GET` routes, including `GET /mask-fill`, and `POST /api/customize` do not use them.
 
 ## Route map
 
@@ -18,11 +18,13 @@ Path, header, and JSON field names below are the wire identifiers. Some validati
 |---|---|---|
 | `GET` | `/` | HTML generate form |
 | `GET` | `/customize` | HTML form for editing one photo |
+| `GET` | `/mask-fill` | HTML form for filling a painted region |
 | `GET` | `/healthz` | JSON status of the process and the model |
 | `GET` | `/api/config` | JSON limits and presets |
 | `GET` | `/api/logs` | JSON ring buffer of logs |
 | `POST` | `/api/generate` | JSON generation result |
 | `POST` | `/api/customize` | JSON photo-edit result |
+| `POST` | `/api/mask-fill` | JSON mask-fill result |
 | `GET` | `/outputs/<name>` | PNG, or JSON 404 |
 | `GET` | `/static/<path:filename>` | Flask static files (`app/static/`) |
 
@@ -107,7 +109,7 @@ Native `high` frames: `2048×2048`, `2400×1792`, `1792×2400`, `2528×1696`, `1
 
 If `negative_prompt` is empty, the pipeline receives `DEFAULT_NEGATIVE_PROMPT` (an empty string by default). WebStorage receives the stripped user field, without that default substituted in.
 
-Headers, and only on this method:
+Headers on this method and on `POST /api/mask-fill`:
 
 | Header | Rule |
 |---|---|
@@ -172,6 +174,35 @@ Edits one photo. The size in the response is the original file frame, not the in
 
 The model receives a frame fitted into `MIN_SIDE`…`MAX_SIDE` (512…2752) on a multiple of 32. The response JSON contains `seed`, `duration`, `width`, `height`, and `images`. `width` and `height` are the uploaded photo's size. The saved PNG is restored to that size (`PhotoFrame.restore`). There are no `saved`, `storage_id`, or `storage_error` fields.
 
+## `GET /mask-fill`
+
+HTML form for painting a mask on one photo and, optionally, ordering reference photos. This route does not read identity headers and does not call WebStorage.
+
+## `POST /api/mask-fill`
+
+Fills the white region of a mask on one photo. There is no size picker. The JSON `width` and `height` are the uploaded photo's size. The model frame is that photo fitted the same way customisation fits a file (`fit_model_size`: sides on a multiple of 32, within `MIN_SIDE`…`MAX_SIDE`). The mask is scaled to that frame with nearest-neighbour. The PNG is restored to the photo's size (`PhotoFrame.restore`).
+
+| Field | Required | Rule |
+|---|---|---|
+| `prompt` | yes | Same as `prompt` on generate: English, up to 2000 characters |
+| `negative_prompt` | no | Same as on generate. An empty field stays an empty string for the archive |
+| `image` | yes | Exactly one main photo. JPEG, PNG, WEBP, BMP. The field name is `image`, not `images` |
+| `mask` | yes | Exactly one file. The page sends a PNG. The decoder accepts JPEG, PNG, WEBP, and BMP. Pixel width and height must match the main photo. White is the area to fill. An all-black mask is `400`. A size mismatch is `400` |
+| `images` | no | Repeated file field, in the order sent. Same formats as generate. At most `MAX_IMAGES - 2` (8 when the cap is 10), because the photo and the mask already use two condition slots. The long side is shrunk to `INPUT_MAX_SIDE` (1536) |
+| `steps` | no | Same as on generate |
+| `true_cfg_scale` | no | Same as on generate |
+| `seed` | no | Same as on generate |
+
+The pipeline receives `images` in this order: the fitted main photo (RGB), the fitted mask (RGB), then the reference photos. The prompt is sent as written.
+
+Identity headers are `X-Auth-User-Id` and `X-Auth-Email`, with the same rules as `POST /api/generate`. `GET /mask-fill` does not read them.
+
+Success is `200` and the generation JSON shape: `seed`, `duration`, `width`, `height`, `images` (local PNG URLs), and either `saved` plus `storage_id` or `saved: false` plus `storage_error`.
+
+A UUID `X-Auth-User-Id` saves the run and returns `saved: true` with `storage_id`. Without a UUID, WebStorage is not called and `storage_error` is `not saved: no user id`. If the UUID was valid and the archive failed, the status stays `200`, the PNG is still returned, `saved` is `false`, and `storage_error` is the Storage error text. `400`, `413`, and `503` do not call WebStorage.
+
+The archive `images`, in this order, are the main photo, the mask, then the reference photos, re-encoded as PNG. `width` and `height` in that call are the uploaded photo's size, the same numbers as the JSON.
+
 ## `GET /outputs/<name>`
 
 Returns a PNG (`image/png`) from `OUTPUT_DIR`. The name must not leave the directory: `../` and an encoded escape return 400 (`ValidationError`) or 404, and a file outside the directory is not served. The directory keeps the latest `KEEP_OUTPUTS` files (default 200).
@@ -186,13 +217,13 @@ status 404.
 
 ## `GET /static/<path:filename>`
 
-Ordinary Flask static files: `style.css`, `app.js`, `customize.js`.
+Ordinary Flask static files: `style.css`, `app.js`, `customize.js`, `mask_fill.js`, `mask_fill.css`.
 
 ## Errors
 
 | Status | When | Body |
 |---|---|---|
-| 400 | `ValidationError`: empty prompt, Cyrillic, length, steps, CFG, size, format or file count, path escape | `{"error": "…"}` |
+| 400 | `ValidationError`: empty prompt, Cyrillic, length, steps, CFG, size, format or file count, path escape, a mask that does not match the photo, or an all-black mask | `{"error": "…"}` |
 | 413 | Body larger than `MAX_UPLOAD_MB` | `{"error": "Суммарный размер загрузки больше 60 МБ"}` |
 | 503 | `PipelineError` (load, config, OOM inside the generator) | `{"error": "<PipelineError text>"}` |
 | 404 | No file at `/outputs/<name>` | `{"error": "Файл не найден"}` |
@@ -204,7 +235,7 @@ The shared handler does not replace `HTTPException`, so an unknown-path 404 and 
 
 ## Outbound WebStorage call
 
-Only after a successful generation and a written PNG, and only when `X-Auth-User-Id` is a UUID.
+Only after a successful `POST /api/generate` or `POST /api/mask-fill` and a written PNG, and only when `X-Auth-User-Id` is a UUID.
 
 ```http
 POST {WEBSTORAGE_URL}/api/generated
@@ -224,9 +255,9 @@ Parts, in this order:
 | `seed` | The seed actually used |
 | `steps` | |
 | `true_cfg_scale` | Number without trailing zeros |
-| `width`, `height` | Generation frame |
+| `width`, `height` | On generate, the frame passed to the pipeline. On mask fill, the uploaded photo's width and height |
 | `duration` | Seconds with one decimal place (`1.26` → `"1.3"`) |
-| `images` | References re-encoded as PNG, names `image-1.png`, `image-2.png`, … |
+| `images` | PNG files, names `image-1.png`, `image-2.png`, …. On generate, the reference photos. On mask fill, the main photo, the mask, then the reference photos, in that order |
 | `result` | The first saved PNG, file name as in `images[0].name` |
 
 The expected status is **201** and a JSON object with a non-empty string `id`. `created_at` is not read. Any other outcome becomes `saved: false` and does not change the generation HTTP status.

@@ -1,6 +1,6 @@
 # Change Request: Mask-fill form
 
-> **Status:** Proposed (discovery). Not implemented.
+> **Status:** Implemented
 > **Repos:** qwen-image-service (this document).
 > **Caller of this service:** the browser, through the Auth Gateway at `https://image.filenkov.store`.
 > **This service calls:** the already loaded `QwenImage21Pipeline`, then WebStorage `POST {WEBSTORAGE_URL}/api/generated` the same way `POST /api/generate` does.
