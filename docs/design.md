@@ -1,6 +1,6 @@
 # Service design
 
-A Flask process generates images with [Qwen/Qwen-Image-2.1](https://huggingface.co/Qwen/Qwen-Image-2.1) on a Tesla V100 32 GB. The browser opens the Auth Gateway (`https://image.filenkov.store`). This repository is the GPU worker and two HTML forms, with no login and no history.
+A Flask process generates images with [Qwen/Qwen-Image-2.1](https://huggingface.co/Qwen/Qwen-Image-2.1) on a Tesla V100 32 GB. The browser opens the Auth Gateway (`https://image.filenkov.store`). This repository is the GPU worker and three HTML forms, with no login and no history.
 
 Field contract: [api-contract.md](api-contract.md). Why the network, memory, diffusers pin, archive, Podman, uv, and a single worker are set up this way: [adr/](adr/).
 
@@ -15,11 +15,12 @@ Application behavior does not change when packaging or deploy changes. The runti
 | `app/config.py` | Frozen `Settings` from the environment, read once at import |
 | `app/routes.py` | Forms and JSON: parse fields, call the generator, write PNGs, call the archive |
 | `app/imaging.py` | Presets, file validation, `PhotoFrame` for customize, PNG names, directory prune |
+| `app/maskfill.py` | Pair the main photo and the mask, fit both, restore the result. Public entry `prepare_mask_fill` |
 | `app/generator.py` | Load diffusers, memory modes, one `threading.Lock` on the GPU |
 | `app/offload.py` | `CpuHostedTextEncoder`: Qwen3-VL tail in RAM, looks like a GPU module to the pipeline |
 | `app/webstorage.py` | `POST {WEBSTORAGE_URL}/api/generated` on the stdlib, no SDK |
 | `app/logbuf.py` | Ring of 400 lines for `GET /api/logs` |
-| `app/templates/`, `app/static/` | Forms `index.html` and `customize.html`, log polling |
+| `app/templates/`, `app/static/` | Forms `index.html`, `customize.html`, and `mask_fill.html`, log polling |
 
 Tests replace `app.generator` before the package import, so the HTTP layer is checked without torch. See [tests.md](tests.md).
 
@@ -31,7 +32,7 @@ browser → Auth Gateway → qwen-image:8000
                               ▼
                          routes.py
                               │
-              imaging.py: size, files, PhotoFrame
+         imaging.py, or maskfill.prepare_mask_fill
                               │
                               ▼
                     generator.generate()
@@ -40,7 +41,7 @@ browser → Auth Gateway → qwen-image:8000
                               ▼
               imaging.save_outputs → PNG in OUTPUT_DIR
                               │
-              POST /api/generate and a UUID?
+    POST /api/generate or POST /api/mask-fill, and a UUID?
                      │ yes
                      ▼
               webstorage.save_generated
@@ -53,6 +54,8 @@ browser → Auth Gateway → qwen-image:8000
 `GET /outputs/<name>` reads a PNG already on disk and does not call the generator. `GET /healthz` and `GET /api/config` do not run inference either. `GET /api/logs` reads the buffer while generation occupies another thread.
 
 Customize (`POST /api/customize`) uses the same generator, but the JSON size is the original photo: `prepare_photo` builds the model frame, and `PhotoFrame.restore` returns the PNG to the file's width and height. The archive is not called.
+
+Mask fill (`GET /mask-fill`, `POST /api/mask-fill`) uses the same generator. `GET /mask-fill` does not read identity headers. `prepare_mask_fill` fits the main photo and scales the mask with nearest-neighbour. The pipeline and the archive both receive, in order, the main photo, the mask (white is the area to fill), then the reference photos. The JSON `width` and `height`, and those fields on the archive, are the uploaded photo's size. Save rules match generation: a UUID `X-Auth-User-Id` saves and returns `saved: true`; no UUID sets `storage_error` to `not saved: no user id` and skips Storage; a storage failure is still HTTP 200 with the PNG; `400`, `413`, and `503` do not call Storage.
 
 Generation is serialized by `_gpu_lock` in `QwenImageGenerator`. Concurrent HTTP requests wait on that lock. The image therefore runs one gunicorn worker and four threads: the generation thread must not block `/healthz` and `/api/logs`. Details: [adr/0008-single-worker-gpu-lock.md](adr/0008-single-worker-gpu-lock.md).
 
@@ -88,7 +91,7 @@ The first container start downloads weights onto the `HF_HOME` volume (`/data/hu
 
 **Hugging Face.** `DiffusionPipeline.from_pretrained(MODEL_ID)` (or the class from `PIPELINE_CLASS`). The cache is the volume at `/data/huggingface`. The `QwenImage21Pipeline` class is pinned to a diffusers commit; see [adr/0004-diffusers-git-pin.md](adr/0004-diffusers-git-pin.md).
 
-**WebStorage.** After a successful generation the process, on the Auth network, calls the DNS name `app` (`WEBSTORAGE_URL`, default `http://app:8000`). WebStorage is not on `qwen_image_gen_network`. An archive failure does not fail generation. See [adr/0002-dual-networks.md](adr/0002-dual-networks.md) and [adr/0005-webstorage-best-effort.md](adr/0005-webstorage-best-effort.md).
+**WebStorage.** After a successful `POST /api/generate` or `POST /api/mask-fill` the process, on the Auth network, calls the DNS name `app` (`WEBSTORAGE_URL`, default `http://app:8000`). WebStorage is not on `qwen_image_gen_network`. An archive failure does not fail the run. See [adr/0002-dual-networks.md](adr/0002-dual-networks.md) and [adr/0005-webstorage-best-effort.md](adr/0005-webstorage-best-effort.md).
 
 ## Deploy
 

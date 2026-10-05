@@ -13,18 +13,18 @@ This repository creates the network. Auth-Service attaches to it from its own co
 
 The gateway decides who is allowed: the `image` role (`FAMILY` or `ADMIN` in User-Service).
 The gateway strips incoming client `X-Auth-*` headers. This service has no login, sessions, role check, or JWT check.
-The exception is `POST /api/generate`: `X-Auth-User-Id` and `X-Auth-Email` are read only to sign the save into WebStorage.
-`GET` routes do not use those headers. A request that arrived here is already allowed.
+The exception is `POST /api/generate` and `POST /api/mask-fill`: `X-Auth-User-Id` and `X-Auth-Email` are read only to sign the save into WebStorage.
+`GET` routes, including `GET /mask-fill`, do not use those headers. A request that arrived here is already allowed.
 The trust boundary is the network itself: `qwen_image_gen_network` may contain only the gateway and `qwen-image`.
 WebStorage is not on `qwen_image_gen_network`. Any other container on that network bypasses the role check.
 
-To call WebStorage after a successful generation, this container also joins the Auth network.
+To call WebStorage after a successful generation or mask fill, this container also joins the Auth network.
 `AUTH_DOCKER_NETWORK` is the Auth stack network (`deploy_auth_network` when Auth is started from `Auth-Service/deploy`).
 This repository does not create it: the Auth stack must already be up.
 On that network the container keeps the name `qwen-image` and calls the DNS name `app`, which is what WebStorage is called there.
 Do not rename this container to `app`.
 
-After a successful generation the process `POST`s to `WEBSTORAGE_URL` (default `http://app:8000`) at `/api/generated`.
+After a successful generation or mask fill the process `POST`s to `WEBSTORAGE_URL` (default `http://app:8000`) at `/api/generated`.
 It forwards `X-Auth-User-Id` and, if that header was on the incoming request, `X-Auth-Email`.
 `Cookie`, `Authorization`, and `X-Auth-Role` are not sent. This service does not verify a JWT.
 The archive address in `.env` is `WEBSTORAGE_URL=http://app:8000`.
@@ -245,12 +245,34 @@ Edits one photo. The form has no resolution: the size comes from the file. The r
 
 Fitting to a multiple of 32 and the side limit, then restoring the result to the original width and height, is hidden in `PhotoFrame` (`app/imaging.py`). In the JSON, `width` and `height` are the uploaded photo's size, not the intermediate model frame.
 
+### `POST /api/mask-fill` — `multipart/form-data`
+
+Fills the white region of a mask on one photo. There is no size picker. `width` and `height` in the JSON are the uploaded photo's size. The page is `GET /mask-fill`; that GET does not read identity headers.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `prompt` | string | — | Required, English only (Cyrillic is rejected) |
+| `negative_prompt` | string | `""` | English as well |
+| `image` | file | — | Exactly one main photo: JPEG/PNG/WEBP/BMP |
+| `mask` | file | — | Exactly one file. The page sends a PNG. White is the area to fill. Same pixel size as the main photo |
+| `images` | file[] | — | Ordered reference photos, same formats as generate. At most `MAX_IMAGES - 2` |
+| `steps` | int | 40 | 1…`MAX_STEPS` |
+| `true_cfg_scale` | float | 1.0 | 1.0…10.0 |
+| `seed` | int | `-1` | `-1` means random |
+
+The pipeline and the WebStorage archive both receive files in this order: the main photo, the mask, then the reference photos. The prompt is sent as written.
+
+From outside, requests go to `https://image.filenkov.store/api/mask-fill` and need a gateway session with the `image` role. The JSON shape matches generation, including `saved` and `storage_id` after a successful save.
+
+Save rules match `POST /api/generate`. A UUID `X-Auth-User-Id` saves the run and returns `saved: true`. Without a UUID, WebStorage is not called and `storage_error` is `not saved: no user id`. If WebStorage returned an error, timed out, or was unreachable, the response is still `200`: `saved` is `false`, `storage_error` is the error text, there is no `storage_id`, and `images` still point at the local PNG. Validation errors are `400`, a pipeline that is unavailable or out of memory is `503`, and an upload that is too large is `413`. WebStorage is not called in those cases.
+
 ### Other endpoints
 
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/` | Web form for generation |
 | `GET` | `/customize` | Web form for customizing one photo |
+| `GET` | `/mask-fill` | Web form for filling a painted region of one photo |
 | `GET` | `/healthz` | Status, memory mode, model load error |
 | `GET` | `/api/config` | Limits and the list of resolution presets |
 | `GET` | `/outputs/<name>` | Finished image (the latest `KEEP_OUTPUTS` files are kept) |
@@ -265,6 +287,7 @@ app/
   offload.py     text-encoder proxy (weights in RAM, interface "as if on GPU")
   generator.py   pipeline load, memory modes, generation under the GPU lock
   imaging.py     resolution presets, upload validation, saving results
+  maskfill.py    pair the main photo, the mask, and ordered references
   routes.py      web form and JSON API
   __init__.py    application factory, background model preload
 tests/           pytest suite, runs without a GPU and without ML dependencies
