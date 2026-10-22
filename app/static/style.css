@@ -4,6 +4,13 @@
   display: none !important;
 }
 
+.header-right .user-name {
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .tool {
   background: var(--paper-raised);
   border: 1px solid var(--rule);

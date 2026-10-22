@@ -1,0 +1,8 @@
+<div class="header-right">
+  {% if account_name %}
+    <span class="user-name">{{ account_name }}</span>
+    <a class="btn btn-ghost btn-small" href="https://filenkov.store">Sign out</a>
+  {% else %}
+    <a class="btn btn-small" id="sign-in" href="https://filenkov.store/auth">Sign in</a>
+  {% endif %}
+</div>
