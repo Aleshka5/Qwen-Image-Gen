@@ -1,11 +1,15 @@
-"""Общие фикстуры. app.generator (torch/diffusers) подменяется до импорта пакета app."""
+"""Общие фикстуры.
+
+``app.generator`` больше не грузит torch: модели живут в inference-сервисах
+(``../Common/models``), а здесь только HTTP-клиент. Поэтому модуль импортируется
+по-настоящему, и подменяется лишь объект ``generator`` — в обоих пространствах
+имён, где на него есть ссылка: в фабрике приложения и в blueprint'е маршрутов.
+"""
 
 from __future__ import annotations
 
 import os
-import sys
 import tempfile
-import types
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -18,28 +22,7 @@ OUTPUT_DIR = _TMP_ROOT / "outputs"
 os.environ["OUTPUT_DIR"] = str(OUTPUT_DIR)
 os.environ["PRELOAD_MODEL"] = "false"
 
-
-@dataclass(slots=True)
-class GenerationRequest:
-    prompt: str
-    negative_prompt: str
-    width: int
-    height: int
-    steps: int
-    true_cfg_scale: float
-    seed: int
-    images: list[Image.Image]
-
-
-@dataclass(slots=True)
-class GenerationResult:
-    images: list[Image.Image]
-    seed: int
-    duration: float
-
-
-class PipelineError(RuntimeError):
-    pass
+from app.generator import GenerationRequest, GenerationResult, PipelineError  # noqa: E402
 
 
 @dataclass
@@ -64,20 +47,22 @@ class FakeGenerator:
         images = [Image.new("RGB", (8, 8), (i * 40 % 256, 0, 0)) for i in range(self.num_images)]
         return GenerationResult(images=images, seed=request.seed, duration=0.5)
 
+    def probe(self) -> list:
+        """The real generator asks each inference stage for /healthz; the stub has none."""
+        return []
+
     def reset(self) -> None:
         self.__init__()
 
 
 _fake = FakeGenerator()
-_stub = types.ModuleType("app.generator")
-_stub.GenerationRequest = GenerationRequest
-_stub.GenerationResult = GenerationResult
-_stub.PipelineError = PipelineError
-_stub.QwenImageGenerator = FakeGenerator
-_stub.generator = _fake
-sys.modules["app.generator"] = _stub
 
 import app as app_pkg  # noqa: E402
+import app.routes as _routes  # noqa: E402
+
+# create_app() и blueprint держат собственные ссылки на объект генератора.
+app_pkg.generator = _fake
+_routes.generator = _fake
 
 
 class RecordingClient(FlaskClient):

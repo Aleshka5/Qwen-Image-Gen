@@ -1,4 +1,10 @@
-"""README, Dockerfile и compose.yaml: запуск за Auth Gateway в двух сетях без публикации порта."""
+"""README, Dockerfile и compose.yaml: оркестратор за Auth Gateway, без своего GPU и без публикации 8000.
+
+С тех пор как пайплайн разложен на три inference-сервиса (ADR 0009), у этого
+репозитория другие инварианты: сеть `models_network`, имя контейнера
+`qwen-image-split` (с алиасом `qwen-image`), никакого `--device`, единственный
+опубликованный порт — `127.0.0.1:18000` для health-проб.
+"""
 
 from __future__ import annotations
 
@@ -14,8 +20,10 @@ README = (ROOT / "README.md").read_text(encoding="utf-8")
 DOCKERFILE = (ROOT / "Dockerfile").read_text(encoding="utf-8")
 COMPOSE = (ROOT / "compose.yaml").read_text(encoding="utf-8")
 
-NETWORK = "qwen_image_gen_network"
+NETWORK = "models_network"
 AUTH_NETWORK = "deploy_auth_network"
+CONTAINER = "qwen-image-split"
+ALIAS = "qwen-image"
 
 
 def _code_lines(markdown: str, languages=("bash", "sh", "shell", "")) -> list[str]:
@@ -24,17 +32,6 @@ def _code_lines(markdown: str, languages=("bash", "sh", "shell", "")) -> list[st
         if lang in languages:
             lines.extend(re.sub(r"\\\n\s*", " ", body).splitlines())
     return [line.strip() for line in lines if line.strip()]
-
-
-def _service_run_commands() -> list[list[str]]:
-    commands = []
-    for line in _code_lines(README, languages=("bash", "sh", "shell")):
-        if not line.startswith("podman run"):
-            continue
-        tokens = shlex.split(line, comments=True)
-        if "qwen-image-service:latest" in tokens and "--device" in tokens:
-            commands.append(tokens)
-    return commands
 
 
 def _option(tokens: list[str], name: str) -> list[str]:
@@ -69,95 +66,64 @@ def _block(text: str, key: str, indent: int) -> str:
     return "\n".join(body)
 
 
-@pytest.fixture(scope="module")
-def run_commands():
-    commands = _service_run_commands()
-    assert commands, "в README нет ```bash-блока с `podman run ... --device ... qwen-image-service:latest`"
-    return commands
+def test_compose_runs_the_orchestrator_only():
+    service = _block(COMPOSE, "qwen-image", indent=2)
+    assert f"image: localhost/qwen-image-service:latest" in service
+    assert f"container_name: {CONTAINER}" in service
+    assert "env_file: .env" in service
+    assert "qwen-outputs:/data/outputs" in service
+    # Модели не здесь: GPU-устройства и том с весами этому контейнеру не нужны.
+    assert "nvidia.com/gpu=all" not in COMPOSE
+    assert not re.search(r"^\s+devices:", COMPOSE, re.M)
+    assert "qwen-hf-cache" not in COMPOSE
+    # Порты: только loopback для health-проб, 8000 наружу не выходит.
+    assert '127.0.0.1:18000:8000' in service
+    assert "8000:8000" not in COMPOSE.replace("127.0.0.1:18000:8000", "")
+
+    networks = _block(service, "networks", indent=4)
+    assert NETWORK in networks
+    assert AUTH_NETWORK in networks
+    assert f"- {ALIAS}" in networks
+
+    declared = _block(COMPOSE, "networks", indent=0)
+    for name in (NETWORK, AUTH_NETWORK):
+        assert "external: true" in _block(declared, name, indent=2)
 
 
-def test_run_uses_container_name_qwen_image(run_commands):
-    for tokens in run_commands:
-        assert _option(tokens, "--name") == ["qwen-image"]
-
-
-def test_run_attaches_network(run_commands):
-    for tokens in run_commands:
-        networks = _option(tokens, "--network")
-        assert NETWORK in networks
-        auth = [value for value in networks if value != NETWORK]
-        assert len(auth) == 1
-        assert AUTH_NETWORK in auth[0] or "${AUTH_DOCKER_NETWORK:-deploy_auth_network}" in auth[0]
-
-
-def test_run_does_not_publish_ports(run_commands):
-    for tokens in run_commands:
-        publish = [
-            t for t in tokens
-            if t in {"-p", "-P", "--publish", "--publish-all"}
-            or re.match(r"^(-p|--publish|--publish-all)=", t)
-            or re.match(r"^-p\d", t)
-        ]
-        assert publish == []
-        assert not any("8000:8000" in t for t in tokens)
-
-
-def test_run_keeps_gpu_volumes_and_limits(run_commands):
-    for tokens in run_commands:
-        assert "nvidia.com/gpu=all" in _option(tokens, "--device")
-        volumes = _option(tokens, "-v") + _option(tokens, "--volume")
-        assert "qwen-hf-cache:/data/huggingface" in volumes
-        assert "qwen-outputs:/data/outputs" in volumes
-        assert _option(tokens, "--shm-size")
-        assert _option(tokens, "--memory")
-
-
-def test_readme_creates_network():
-    assert any(
-        re.fullmatch(rf"podman network create {NETWORK}", line)
-        for line in _code_lines(README)
-    )
+def test_compose_has_no_inference_stages():
+    """Три стадии живут в ../Common/models; в этом файле их быть не должно."""
+    for stage in ("qwen-embed", "qwen-vae", "qwen-dit"):
+        assert stage not in COMPOSE.split("services:", 1)[1].split("networks:", 1)[0]
 
 
 @pytest.mark.parametrize(
     "text",
-    ["https://image.filenkov.store", "Auth Gateway", NETWORK, "http://qwen-image:8000"],
+    ["https://image.filenkov.store", "Auth Gateway", NETWORK, "http://qwen-image:8000", CONTAINER],
 )
 def test_readme_mentions_gateway_topology(text):
     assert text in README
 
 
-def test_compose_attaches_both_networks_without_publishing():
-    service = _block(COMPOSE, "qwen-image", indent=2)
-    assert "image: qwen-image-service:latest" in service
-    assert "container_name: qwen-image" in service
-    assert "env_file: .env" in service
-    assert "shm_size: 8gb" in service
-    assert "mem_limit: 64g" in service
-    assert "nvidia.com/gpu=all" in service
-    assert "qwen-hf-cache:/data/huggingface" in service
-    assert "qwen-outputs:/data/outputs" in service
-    networks = _block(service, "networks", indent=4)
-    assert f"- {NETWORK}" in networks
-    assert f"- {AUTH_NETWORK}" in networks
-    assert "ports:" not in COMPOSE
-    assert "8000:8000" not in COMPOSE
+def test_readme_documents_start_order():
+    """Сначала базовый образ и стадии, потом оркестратор — иначе имена не резолвятся."""
+    lines = _code_lines(README)
+    joined = "\n".join(lines)
+    assert "podman build -t localhost/qwen-image-service:latest" in joined
+    assert "podman compose up -d" in joined
+    assert "../Common/models" in README and "./scripts/up.sh" in README
+    assert README.index("Common/models") < README.index("podman compose up -d")
 
-    declared = _block(COMPOSE, "networks", indent=0)
-    for name in (NETWORK, AUTH_NETWORK):
-        body = _block(declared, name, indent=2)
-        assert "external: true" in body
 
-    assert "compose.yaml" in README
-    assert not (ROOT / "deploy" / "qwen-image.container").exists()
-    assert not (ROOT / "Containerfile").exists()
+def test_readme_documents_the_stage_contract():
+    assert "docs/models_inference_api.md" in README
+    assert "docs/adr/0009" in README
 
 
 def test_readme_states_webstorage_save_and_network_boundary():
     assert "WEBSTORAGE_URL" in README or "http://app:8000" in README
     assert "X-Auth-User-Id" in README
-    assert "only the gateway and `qwen-image`" in README
-    assert re.search(r"WebStorage is not on `qwen_image_gen_network`", README)
+    assert "The trust boundary is the network itself" in README
+    assert re.search(r"WebStorage is not on `models_network`", README)
 
 
 def test_readme_has_no_host_port_in_commands():
@@ -219,3 +185,9 @@ def test_dockerfile_installs_with_uv_sync():
     assert "pip install" not in DOCKERFILE
     assert "uv.lock" in DOCKERFILE
     assert "pyproject.toml" in DOCKERFILE
+
+
+def test_dockerfile_is_the_base_of_the_inference_services():
+    """Стадии из Common/models делают FROM этого образа — это должно быть записано."""
+    assert "localhost/qwen-image-service:latest" in DOCKERFILE
+    assert "Common/models" in DOCKERFILE

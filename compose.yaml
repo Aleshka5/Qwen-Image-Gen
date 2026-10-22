@@ -1,35 +1,51 @@
-# qwen-image listens on 8000 only inside the networks. Do not add a ports section.
-# The host provides the GPU through NVIDIA CDI `nvidia.com/gpu=all`
-# (`nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`).
+# Оркестратор Qwen-Image 2.1. Моделей здесь нет: три inference-сервиса
+# (embedding, DiT, VAE) живут в ../Common/models и поднимаются оттуда.
+# Порядок: сначала `./scripts/up.sh` в Common/models, потом этот файл.
+#
+# GPU этому контейнеру не нужен и не выдаётся — ни `devices:`, ни CDI: процесс
+# не импортирует torch, он только пересылает safetensors-блобы между стадиями.
+#
+# Имя контейнера `qwen-image-split`, а не `qwen-image`: switch-service владеет
+# именем `qwen-image` (выведенный из эксплуатации монолит) и останавливает любой
+# контейнер с этим именем, пока сервис `image` в каталоге находится в `off`.
+# Сетевой alias `qwen-image` сохраняет DNS для Auth Gateway и остальных клиентов.
+#
+# Порт публикуется только на loopback: rootless podman-контейнер недоступен с
+# хоста по IP, а имена контейнеров на хосте не резолвятся, поэтому
+# 127.0.0.1:18000 — только для health-проб.
 
 services:
   qwen-image:
     build:
       context: .
       dockerfile: Dockerfile
-    image: qwen-image-service:latest
-    container_name: qwen-image
+    # One image for both roles: the `app` stage of the Dockerfile is this
+    # orchestrator, and the same tag is the ML base the three inference services
+    # in ../Common/models are built FROM. Build it once:
+    #   podman build -t localhost/qwen-image-service:latest -f Dockerfile .
+    image: localhost/qwen-image-service:latest
+    container_name: qwen-image-split
     env_file: .env
     restart: always
-    shm_size: 8gb
-    mem_limit: 64g
-    devices:
-      - nvidia.com/gpu=all
+    mem_limit: 2g
     volumes:
-      - qwen-hf-cache:/data/huggingface
       - qwen-outputs:/data/outputs
     networks:
-      - qwen_image_gen_network
-      - deploy_auth_network
+      models_network:
+        aliases:
+          - qwen-image
+      # WebStorage (`http://app:8000/api/generated`) живёт в auth-сети.
+      deploy_auth_network: {}
+    ports:
+      - "127.0.0.1:18000:8000"
 
 networks:
-  qwen_image_gen_network:
+  models_network:
     external: true
   deploy_auth_network:
     external: true
 
 volumes:
-  qwen-hf-cache:
-    name: qwen-hf-cache
   qwen-outputs:
     name: qwen-outputs
+    external: true

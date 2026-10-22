@@ -4,6 +4,18 @@
 # Torch ships its own CUDA libraries (nvidia-* packages). The base image only
 # needs the runtime minimum. Host driver 560+ (checked on 580).
 #
+# This file builds two things from one set of layers:
+#
+#   * the ML base — stages `base` + `ml`: CUDA runtime, system Python 3.10,
+#     torch 2.7.1+cu126, diffusers at the pinned commit, transformers. The three
+#     inference services in ../Common/models do `FROM localhost/qwen-image-service:latest`,
+#     so this is the image they are built on top of. Their Dockerfiles are thin
+#     source layers; nothing is re-downloaded.
+#   * the orchestrator — stage `app`: this repository's Flask code, which now only
+#     sequences those services over HTTP (docs/models_inference_api.md) and
+#     imports no torch. It inherits the ML venv because it shares the layers;
+#     a slimmer runtime is possible but would mean a second image to publish.
+#
 # Stages:
 #   base — CUDA runtime + system Python 3.10 (Ubuntu 22.04) and uv
 #   ml   — uv sync: project dependencies and the ml group (torch 2.7.1+cu126 from the lock);

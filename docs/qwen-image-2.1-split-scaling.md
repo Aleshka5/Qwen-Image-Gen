@@ -1,3 +1,12 @@
+> **Implemented as a custom worker (2026-10-22).** The analysis below is kept as
+> the reasoning that led to ADR 0009: the official pipeline cannot be split, so
+> this service reimplemented the loop. What exists now: three inference services
+> (`../Common/models`: embedding, DiT with an SSE progress stream, VAE with
+> separate encode/decode endpoints) and this repository as the orchestrator. The
+> public API is unchanged and the output is bit-identical to `pipe(...)` — see
+> `scripts/parity.sh` in Common/models. Read the blockers below as the list of
+> things the custom loop had to reimplement, not as reasons it is impossible.
+
 # Can Qwen-Image-2.1 run as three independently scaled services?
 
 **Partial.** The text encoder, VAE, and denoise DiT are separate weight folders and separate modules, and a single generation really is three phases with a small tensor handoff. They cannot be brought up and autoscaled as three independent network services with the code this repository runs, or with the official Qwen-Image-2.1 serving path.

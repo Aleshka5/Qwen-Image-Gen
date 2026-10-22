@@ -1,6 +1,6 @@
 # Service design
 
-A Flask process generates images with [Qwen/Qwen-Image-2.1](https://huggingface.co/Qwen/Qwen-Image-2.1) on a Tesla V100 32 GB. The browser opens the Auth Gateway (`https://image.filenkov.store`). This repository is the GPU worker and three HTML forms, with no login and no history.
+A Flask process **orchestrates** image generation with [Qwen/Qwen-Image-2.1](https://huggingface.co/Qwen/Qwen-Image-2.1) on a Tesla V100 32 GB. The browser opens the Auth Gateway (`https://image.filenkov.store`). This repository is three HTML forms, the JSON API, and the sequencing of three inference services; it holds no model (ADR 0009). The models and their HTTP contract live in `../Common/models`, documented in [models_inference_api.md](models_inference_api.md). No login, no history.
 
 Field contract: [api-contract.md](api-contract.md). Why the network, memory, diffusers pin, archive, Podman, uv, and a single worker are set up this way: [adr/](adr/).
 
@@ -16,13 +16,14 @@ Application behavior does not change when packaging or deploy changes. The runti
 | `app/routes.py` | Forms and JSON: parse fields, call the generator, write PNGs, call the archive |
 | `app/imaging.py` | Presets, file validation, `PhotoFrame` for customize, PNG names, directory prune |
 | `app/maskfill.py` | Pair the main photo and the mask, fit both, restore the result. Public entry `prepare_mask_fill` |
-| `app/generator.py` | Load diffusers, memory modes, one `threading.Lock` on the GPU |
-| `app/offload.py` | `CpuHostedTextEncoder`: Qwen3-VL tail in RAM, looks like a GPU module to the pipeline |
+| `app/generator.py` | `SplitPipeline`: the four hops (encode, vae encode, denoise over SSE, decode), `PipelineError`, stage probing |
+| `app/stages.py` | HTTP transport to the services: multipart, SSE parsing, `StageError` |
+| `app/geometry.py` | The one resize both the encoder and the VAE see, latent grid, `img_shapes` |
 | `app/webstorage.py` | `POST {WEBSTORAGE_URL}/api/generated` on the stdlib, no SDK |
 | `app/logbuf.py` | Ring of 400 lines for `GET /api/logs` |
 | `app/templates/`, `app/static/` | Forms `index.html`, `customize.html`, and `mask_fill.html`, log polling |
 
-Tests replace `app.generator` before the package import, so the HTTP layer is checked without torch. See [tests.md](tests.md).
+Tests replace the `generator` object in the app and in the blueprint, so the HTTP layer runs without models or a GPU. The pipeline itself is tested against a faked transport. See [tests.md](tests.md).
 
 ## Request flow
 
@@ -36,7 +37,7 @@ browser → Auth Gateway → qwen-image:8000
                               │
                               ▼
                     generator.generate()
-                    under _gpu_lock (one GPU)
+              (four HTTP hops, no GPU here)
                               │
                               ▼
               imaging.save_outputs → PNG in OUTPUT_DIR

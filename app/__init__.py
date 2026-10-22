@@ -23,16 +23,20 @@ def _configure_logging() -> None:
     )
 
 
-def _preload_in_background() -> None:
-    """Прогреваем модель в фоне, чтобы первый запрос не ждал загрузку весов."""
+def _probe_stages_in_background() -> None:
+    """Сразу проверяем готовность inference-сервисов, чтобы /healthz не врал при старте.
+
+    Модели живут не здесь: этот процесс только спрашивает у каждого stage его
+    ``/healthz``. Повтор произойдёт на первом запросе генерации.
+    """
 
     def worker() -> None:
         try:
             generator.ensure_loaded()
         except Exception:
-            log.exception("Предзагрузка модели не удалась; повтор произойдёт на первом запросе")
+            log.exception("Проверка stage-сервисов не удалась; повтор произойдёт на первом запросе")
 
-    threading.Thread(target=worker, name="model-preload", daemon=True).start()
+    threading.Thread(target=worker, name="stage-probe", daemon=True).start()
 
 
 def create_app() -> Flask:
@@ -52,6 +56,6 @@ def create_app() -> Flask:
         return jsonify(error=f"Внутренняя ошибка: {type(exc).__name__}"), 500
 
     if settings.preload_model:
-        _preload_in_background()
+        _probe_stages_in_background()
 
     return app

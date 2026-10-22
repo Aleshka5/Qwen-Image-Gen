@@ -36,24 +36,22 @@ class Settings:
     model_revision: str | None = os.getenv("MODEL_REVISION") or None
     pipeline_class: str = os.getenv("PIPELINE_CLASS", "auto")
 
-    # --- размещение и точность ------------------------------------------
-    # fp16 | int8 | offload  (see README, "Memory modes")
-    memory_mode: str = os.getenv("MEMORY_MODE", "int8").strip().lower()
-    device: str = os.getenv("DEVICE", "cuda")
-    text_encoder_device: str = os.getenv("TEXT_ENCODER_DEVICE", "cpu")
-    text_encoder_dtype: str = os.getenv("TEXT_ENCODER_DTYPE", "float16")
-    # Часть Qwen3-VL, которая всё же живёт в VRAM (в fp16): vision-башня и первые N из 36 слоёв.
-    # Слой — ~0.4 GB VRAM вместо ~0.4 GB RAM в fp16 (~0.8 GB, если остаток в fp32).
-    # 24 слоя покрывают DeepStack (8/16/24) и снимают с RAM большую часть энкодера.
-    text_encoder_gpu_layers: int = _int("TEXT_ENCODER_GPU_LAYERS", 24)
-    text_encoder_gpu_vision: bool = _bool("TEXT_ENCODER_GPU_VISION", True)
-    # native — PyTorch SDPA. Имя "sdpa" принимается как алиас (см. generator).
-    attention_backend: str = os.getenv("ATTENTION_BACKEND", "native")
-    # Запасной путь, если полный кадр не влез даже после выноса DiT в RAM.
-    vae_tiling: bool = _bool("VAE_TILING", True)
-    vae_slicing: bool = _bool("VAE_SLICING", True)
-    # Сторона тайла decode в пикселях. Кратность сжатию VAE выравнивается в generator.
-    vae_tile_size: int = _int("VAE_TILE_SIZE", 1536)
+    # --- stages -----------------------------------------------------------
+    # The pipeline no longer lives in this process: three HTTP stages own the
+    # models and this service only sequences them. See docs/models_inference_api.md.
+    output_resolution: int = _int("OUTPUT_RESOLUTION", 1024)
+    embedding_url: str = os.getenv("EMBEDDING_URL", "http://qwen-embed:8011").rstrip("/")
+    vae_url: str = os.getenv("VAE_URL", "http://qwen-vae:8012").rstrip("/")
+    dit_url: str = os.getenv("DIT_URL", "http://qwen-dit:8013").rstrip("/")
+    # Generous: the first request after a restart waits for a stage to load its
+    # weights (17 GB for the encoder). The DiT stream also idles between steps.
+    encoder_timeout: float = _float("ENCODER_TIMEOUT", 600)
+    vae_timeout: float = _float("VAE_TIMEOUT", 600)
+    dit_timeout: float = _float("DIT_TIMEOUT", 3600)
+    health_timeout: float = _float("HEALTH_TIMEOUT", 3)
+    # Where the models live. Kept here because /healthz and the UI show the id;
+    # the weights themselves are read by the stages, on their own volumes.
+    memory_mode: str = os.getenv("MEMORY_MODE", "split").strip().lower()
     preload_model: bool = _bool("PRELOAD_MODEL", True)
 
     # --- параметры генерации --------------------------------------------

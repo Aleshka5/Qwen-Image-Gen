@@ -174,12 +174,14 @@ def mask_fill() -> str:
 
 @bp.get("/healthz")
 def healthz():
+    stages = [stage.as_dict() for stage in generator.probe()]
     return jsonify(
         status="ok",
         model=settings.model_id,
         memory_mode=settings.memory_mode,
         loaded=generator.is_loaded,
         load_error=generator.load_error,
+        stages=stages,
     )
 
 

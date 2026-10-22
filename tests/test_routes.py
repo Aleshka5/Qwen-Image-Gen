@@ -34,9 +34,11 @@ def test_healthz_is_anonymous(client, fake_generator):
     assert response.status_code == 200
     body = response.get_json()
     assert body["status"] == "ok"
-    assert set(body) == {"status", "model", "memory_mode", "loaded", "load_error"}
+    assert set(body) == {"status", "model", "memory_mode", "loaded", "load_error", "stages"}
     assert body["loaded"] is False
     assert body["load_error"] is None
+    # The stub has no stages; the real generator reports one entry per service.
+    assert body["stages"] == []
 
 
 def test_healthz_reports_generator_state(client, fake_generator):

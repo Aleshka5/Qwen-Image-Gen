@@ -6,12 +6,15 @@ dependencies = [
     "Flask>=3.0.3",
     "gunicorn>=23.0.0",
     "python-dotenv>=1.0.1",
+    # The orchestrator imports both: Pillow resizes the condition image, requests
+    # talks to the three inference services. Neither pulls torch in.
+    "Pillow>=10.4.0",
+    "requests>=2.31.0",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8",
-    "Pillow>=10.4.0",
 ]
 # QwenImage21Pipeline (Qwen/Qwen-Image-2.1) exists only on main — release 0.40.0 does not have it.
 # Pinned to the main commit from 2026-09-25; after 0.41.0, switch back to diffusers>=0.41.0.
