@@ -63,13 +63,13 @@
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!fileInput.files || !fileInput.files[0]) {
-      setStatus("Нужно одно референсное фото", true);
+      setStatus("One reference photo is required", true);
       return;
     }
     submit.disabled = true;
     logsEl.replaceChildren();
     logsEl.hidden = true;
-    setStatus("Правка запущена. Первый запрос после старта ждёт загрузки весов — это несколько минут.");
+    setStatus("Edit started. The first request after startup waits for the weights to load — that takes several minutes.");
 
     const body = new FormData(form);
 
@@ -127,9 +127,9 @@
         gallery.append(link);
       });
 
-      meta.textContent = `${payload.width}×${payload.height} · seed ${payload.seed} · ${payload.duration} с на GPU`;
+      meta.textContent = `${payload.width}×${payload.height} · seed ${payload.seed} · ${payload.duration} s on GPU`;
       result.hidden = false;
-      setStatus(`Готово за ${((performance.now() - started) / 1000).toFixed(1)} с`);
+      setStatus(`Done in ${((performance.now() - started) / 1000).toFixed(1)} s`);
     } catch (error) {
       setStatus(error.message, true);
     } finally {

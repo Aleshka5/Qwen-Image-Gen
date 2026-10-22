@@ -204,7 +204,7 @@
       if (!image.naturalWidth || !image.naturalHeight) {
         URL.revokeObjectURL(url);
         resetPhoto();
-        setStatus("Не удалось открыть фото", true);
+        setStatus("Could not open the photo", true);
         return;
       }
       if (photoUrl) URL.revokeObjectURL(photoUrl);
@@ -225,7 +225,7 @@
       if (token !== loadToken) return;
       URL.revokeObjectURL(url);
       resetPhoto();
-      setStatus("Не удалось открыть фото", true);
+      setStatus("Could not open the photo", true);
     };
     image.src = url;
   };
@@ -235,7 +235,7 @@
     const width = maskCanvas.width;
     const height = maskCanvas.height;
     if (!width || !height) {
-      reject(new Error("Нет маски"));
+      reject(new Error("No mask"));
       return;
     }
     const out = document.createElement("canvas");
@@ -256,7 +256,7 @@
     ctx.putImageData(pixels, 0, 0);
     out.toBlob((blob) => {
       if (blob) resolve(blob);
-      else reject(new Error("Не удалось собрать маску"));
+      else reject(new Error("Could not build the mask"));
     }, "image/png");
   });
 
@@ -418,8 +418,8 @@
         const moves = document.createElement("div");
         moves.className = "preview-moves";
         moves.append(
-          moveButton("←", `Сдвинуть image ${number} левее`, index > 0, () => move(index, index - 1)),
-          moveButton("→", `Сдвинуть image ${number} правее`, index < selected.length - 1, () => move(index, index + 1)),
+          moveButton("←", `Move image ${number} left`, index > 0, () => move(index, index - 1)),
+          moveButton("→", `Move image ${number} right`, index < selected.length - 1, () => move(index, index + 1)),
         );
         figure.append(moves);
       }
@@ -432,7 +432,7 @@
     selected.forEach((item) => URL.revokeObjectURL(item.url));
     const files = [...refInput.files];
     if (files.length > MAX_REFS) {
-      setStatus(`Выбрано ${files.length} файлов — оставьте не больше ${MAX_REFS}`, true);
+      setStatus(`Selected ${files.length} files — keep at most ${MAX_REFS}`, true);
     } else {
       setStatus("");
     }
@@ -467,7 +467,7 @@
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!(photo && photoFile && hasWhite && form.elements.prompt.value.trim())) {
-      setStatus("Нужны фото, закрашенная область и промпт на английском", true);
+      setStatus("A photo, a painted area, and an English prompt are required", true);
       return;
     }
     endStroke();
@@ -476,7 +476,7 @@
     submit.setAttribute("aria-busy", "true");
     logsEl.replaceChildren();
     logsEl.hidden = true;
-    setStatus("Заливка запущена. Первый запрос после старта ждёт загрузки весов — это несколько минут.");
+    setStatus("Fill started. The first request after startup waits for the weights to load — that takes several minutes.");
 
     const body = new FormData(form);
     body.delete("image");
@@ -544,14 +544,14 @@
         gallery.append(link);
       });
 
-      meta.textContent = `${payload.width}×${payload.height} · seed ${payload.seed} · ${payload.duration} с на GPU`;
+      meta.textContent = `${payload.width}×${payload.height} · seed ${payload.seed} · ${payload.duration} s on GPU`;
       const notSaved = payload.saved === false && typeof payload.storage_error === "string"
         ? payload.storage_error
         : "";
       storageError.textContent = notSaved;
       storageError.hidden = !notSaved;
       result.hidden = false;
-      setStatus(`Готово за ${((performance.now() - started) / 1000).toFixed(1)} с`);
+      setStatus(`Done in ${((performance.now() - started) / 1000).toFixed(1)} s`);
     } catch (error) {
       setStatus(error.message, true);
     } finally {

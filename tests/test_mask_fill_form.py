@@ -37,7 +37,7 @@ def _page_html(client, app) -> dict[str, str]:
 
 
 def _nav(html: str) -> str:
-    match = re.search(r'<nav class="pages">.*?</nav>', html, re.S)
+    match = re.search(r'<nav class="pages"[^>]*>.*?</nav>', html, re.S)
     assert match, "nav.pages is missing"
     return match.group(0)
 
@@ -104,11 +104,11 @@ def test_form_fields_and_canvas_tools():
     assert 'action="/api/mask-fill"' in html
     for element_id in ("tool-brush", "tool-eraser", "brush-size", "undo", "clear-mask", "mask-view"):
         assert f'id="{element_id}"' in html
-    assert "Кисть" in html
-    assert "Ластик" in html
-    assert "Размер кисти" in html
-    assert "Отменить" in html
-    assert "Очистить" in html
+    assert "Brush" in html
+    assert "Eraser" in html
+    assert "Brush size" in html
+    assert "Undo" in html
+    assert "Clear" in html
     assert 'type="range"' in html
     assert "style.css" in html
     assert "mask_fill.css" in html
@@ -157,4 +157,4 @@ def test_rendered_mask_fill_explains_image_order(app):
     assert "image 1" in html
     assert "image 2" in html
     assert "image 3, image 4" in html
-    assert "до 8" in html
+    assert "up to 8" in html
