@@ -76,6 +76,9 @@ ENV HF_HOME=/data/huggingface \
     PORT=8010
 
 EXPOSE 8010
+# Podman's default OCI format drops HEALTHCHECK ("not supported ... ignored"); build with
+# --format docker if you want the image to carry it. Every deployment here probes
+# GET /healthz over HTTP instead: the Switch-Service catalog and the README curl commands.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=180s --retries=3 \
     CMD curl -fsS http://localhost:8010/healthz || exit 1
 
