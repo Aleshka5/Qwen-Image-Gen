@@ -41,6 +41,8 @@ _USER_ID = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 )
 _NOT_SAVED_NO_USER = "not saved: no user id"
+_ACCOUNT_NAME = re.compile(r"[\x00-\x1f\x7f]")
+_ACCOUNT_NAME_MAX = 80
 
 
 def _clean_prompt(raw: str | None, *, field: str, required: bool) -> str:
@@ -117,9 +119,24 @@ def _parse_cfg(raw: str | None) -> float:
     return value
 
 
+def _account_name() -> str | None:
+    """Username the gateway put on the request. Display only. Not a credential."""
+    raw = request.headers.get("X-Auth-Name")
+    if not raw or _ACCOUNT_NAME.search(raw):
+        return None
+    name = " ".join(raw.split())
+    if not name:
+        return None
+    return name[:_ACCOUNT_NAME_MAX]
+
+
+def _render_page(template: str, **context: object) -> str:
+    return render_template(template, account_name=_account_name(), **context)
+
+
 @bp.get("/")
 def index() -> str:
-    return render_template(
+    return _render_page(
         "index.html",
         aspects=ASPECT_RATIOS,
         gen_min_side=GEN_MIN_SIDE,
@@ -134,7 +151,7 @@ def index() -> str:
 
 @bp.get("/customize")
 def customize() -> str:
-    return render_template(
+    return _render_page(
         "customize.html",
         default_steps=settings.default_steps,
         max_steps=settings.max_steps,
@@ -145,7 +162,7 @@ def customize() -> str:
 
 @bp.get("/mask-fill")
 def mask_fill() -> str:
-    return render_template(
+    return _render_page(
         "mask_fill.html",
         max_images=settings.max_images,
         default_steps=settings.default_steps,

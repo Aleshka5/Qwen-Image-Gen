@@ -1,8 +1,10 @@
 """Граница доверия: решение «пускать или нет» принимает Auth Gateway, приложение auth не содержит.
 
-Исключение — POST /api/generate и POST /api/mask-fill: читают только X-Auth-User-Id
-и X-Auth-Email, чтобы сохранить прогон в WebStorage. Остальные заголовки и остальные
-маршруты по-прежнему не читают личность.
+Исключения:
+- POST /api/generate и POST /api/mask-fill читают только X-Auth-User-Id и X-Auth-Email,
+  чтобы сохранить прогон в WebStorage.
+- Страницы читают только X-Auth-Name и показывают его в шапке. Это не сессия и не проверка JWT.
+Остальные заголовки по-прежнему не читаются.
 """
 
 from __future__ import annotations
@@ -159,8 +161,9 @@ def test_app_sources_exist():
 
 @pytest.mark.parametrize("pattern", FORBIDDEN_IN_APP, ids=lambda p: p.pattern)
 def test_app_contains_no_auth_code(pattern):
-    """request.headers допускается только внутри сохранения и только для двух заголовков."""
+    """request.headers допускается в сохранении (два заголовка) и в чтении имени для шапки."""
     generate_lines = _save_view_lines()
+    account_lines = _account_view_lines()
     hits = []
     for path in _app_sources():
         rel = path.relative_to(ROOT)
@@ -168,11 +171,14 @@ def test_app_contains_no_auth_code(pattern):
             if pattern.pattern.startswith(r"(?<![\w.])request\.headers"):
                 if not _FLASK_HEADERS.search(line):
                     continue
-                allowed = (
-                    rel.name == "routes.py"
-                    and lineno in generate_lines
-                    and _identity_tokens(line)
-                    and set(_identity_tokens(line)) <= set(_ALLOWED_IDENTITY)
+                tokens = set(_identity_tokens(line))
+                allowed = rel.name == "routes.py" and (
+                    (
+                        lineno in generate_lines
+                        and tokens
+                        and tokens <= set(_ALLOWED_IDENTITY)
+                    )
+                    or (lineno in account_lines and tokens == {"X-Auth-Name"})
                 )
                 if not allowed:
                     hits.append(f"{rel}:{lineno}: {line.strip()}")
@@ -183,8 +189,9 @@ def test_app_contains_no_auth_code(pattern):
 
 
 def test_identity_headers_only_on_generate_save_path():
-    """X-Auth-User-Id и X-Auth-Email — только чтение в сохранении и пересылка в webstorage."""
+    """X-Auth-User-Id и X-Auth-Email — только сохранение. X-Auth-Name — только подпись в шапке."""
     generate_lines = _save_view_lines()
+    account_lines = _account_view_lines()
     violations = []
     for path in _app_sources():
         rel = path.relative_to(ROOT)
@@ -198,8 +205,15 @@ def test_identity_headers_only_on_generate_save_path():
             header_read = _FLASK_HEADERS.search(line) is not None
             if not tokens and not header_read:
                 continue
-            if any(token not in _ALLOWED_IDENTITY for token in tokens):
+            display_name = (
+                rel.name == "routes.py"
+                and lineno in account_lines
+                and set(tokens) == {"X-Auth-Name"}
+            )
+            if any(token not in _ALLOWED_IDENTITY for token in tokens) and not display_name:
                 violations.append(f"{rel}:{lineno}: forbidden identity token")
+                continue
+            if display_name:
                 continue
             if rel.name == "routes.py":
                 if lineno not in generate_lines or (header_read and not tokens):
@@ -207,7 +221,7 @@ def test_identity_headers_only_on_generate_save_path():
             elif rel.name != "webstorage.py" or header_read:
                 violations.append(f"{rel}:{lineno}: identity outside the save client")
         if path.suffix == ".py":
-            violations.extend(_ast_identity_violations(rel, text, generate_lines))
+            violations.extend(_ast_identity_violations(rel, text, generate_lines, account_lines))
     assert violations == []
 
 
@@ -223,22 +237,35 @@ _SAVE_VIEWS = frozenset({"api_generate", "api_mask_fill"})
 
 
 def _save_view_lines() -> set[int]:
+    return _view_lines(_SAVE_VIEWS)
+
+
+def _account_view_lines() -> set[int]:
+    return _view_lines(frozenset({"_account_name"}))
+
+
+def _view_lines(names: frozenset[str]) -> set[int]:
     source = (ROOT / "app" / "routes.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     found = {
         node.name: node
         for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name in _SAVE_VIEWS
+        if isinstance(node, ast.FunctionDef) and node.name in names
     }
-    assert set(found) == set(_SAVE_VIEWS)
+    assert set(found) == set(names)
     lines: set[int] = set()
     for node in found.values():
         lines.update(range(node.lineno, (node.end_lineno or node.lineno) + 1))
     return lines
 
 
-def _ast_identity_violations(rel: Path, source: str, generate_lines: set[int]) -> list[str]:
-    """Чтение flask-заголовков — только .get двух имён внутри сохранения. Вызов save — только оттуда."""
+def _ast_identity_violations(
+    rel: Path,
+    source: str,
+    generate_lines: set[int],
+    account_lines: set[int],
+) -> list[str]:
+    """Чтение flask-заголовков — .get разрешённых имён внутри сохранения или имени в шапке."""
     tree = ast.parse(source)
     parents: dict[ast.AST, ast.AST] = {}
     for node in ast.walk(tree):
@@ -249,11 +276,9 @@ def _ast_identity_violations(rel: Path, source: str, generate_lines: set[int]) -
         if _is_flask_headers(node):
             call = parents.get(parents.get(node))
             header_name = _get_header_name(call) if isinstance(call, ast.Call) else None
-            if (
-                rel.name != "routes.py"
-                or node.lineno not in generate_lines
-                or header_name not in _ALLOWED_IDENTITY
-            ):
+            display_name = node.lineno in account_lines and header_name == "X-Auth-Name"
+            saved = node.lineno in generate_lines and header_name in _ALLOWED_IDENTITY
+            if rel.name != "routes.py" or not (display_name or saved):
                 violations.append(f"{rel}:{node.lineno}: request.headers outside the save views")
         if isinstance(node, ast.Call) and _call_name(node) == "save_generated":
             if rel.name != "routes.py" or node.lineno not in generate_lines:
