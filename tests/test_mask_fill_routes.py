@@ -73,7 +73,7 @@ def test_mask_fill_page_ignores_identity_headers(client):
     assert 'name="image"' in page
     assert 'name="images"' in page
     assert 'id="mask-view"' in page
-    assert "до 8" in page
+    assert "up to 8" in page
 
 
 def test_mask_fill_endpoints(app):
