@@ -104,12 +104,14 @@ the measurements.
 * Podman with `podman compose`. GPU passthrough (`nvidia-container-toolkit` +
   CDI, device `nvidia.com/gpu=all`) is needed by the **inference stages**; this
   container needs no GPU and no CUDA.
-* The three stages of `../Common/models` up on `models_network`, with the weights
-  in the `qwen-hf-cache` volume. This image is their base, so it is built first.
+* The three stages of `../Common/models` up on `models_network`, each with its own
+  weights volume (`qwen-weights-embed`, `qwen-weights-dit`, `qwen-weights-vae`,
+  created by `scripts/split-weights.sh` there). This image is their base, so it is
+  built first.
 * External networks: `models_network` (created once — `Switch-Service`: `make network`)
   and the Auth network (`deploy_auth_network`).
-* Volume `qwen-outputs` for results. `qwen-hf-cache` is mounted by the stages,
-  not by this container.
+* Volume `qwen-outputs` for results. No weights volume is mounted here: this
+  container holds no model.
 
 ## Build and run
 

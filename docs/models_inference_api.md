@@ -20,9 +20,15 @@ latents         ──► qwen-vae     /v1/vae/decode    ──► PNG
 | DiT | `qwen-dit` | 8013 | `transformer/` + `scheduler/` | `QwenImage21Transformer2DModel` (7B, int8) + `FlowMatchEulerDiscreteScheduler` |
 | VAE | `qwen-vae` | 8012 | `vae/` | `AutoencoderKLQwenImage21` (fp16, 64-channel latent, 16× compression) |
 
-`MODEL_ID` is a **local directory**, `/data/huggingface/Qwen-Image-2.1` (the
-podman volume `qwen-hf-cache`), so no service touches the network at start-up.
-Each one reads only its own subfolder: `from_pretrained(MODEL_ID, subfolder=...)`.
+`MODEL_ID` is a **local directory**, `/data/huggingface/Qwen-Image-2.1`, so no
+service touches the network at start-up. Each stage reads only its own subfolder
+(`from_pretrained(MODEL_ID, subfolder=...)`), and each stage also *mounts* only
+its own part: `qwen-embed`, `qwen-vae` and `qwen-dit` get one volume each
+(`qwen-weights-embed`, `qwen-weights-vae`, `qwen-weights-dit`), read-only,
+hardlinked out of the master `qwen-hf-cache` volume. So the encoder container
+cannot see the DiT's 14 GB or the VAE, and a part can be replaced or upgraded on
+its own. All parts are safetensors; GGUF does not apply to these modules (see
+`../Common/models/README.md`).
 
 ## Transport
 
