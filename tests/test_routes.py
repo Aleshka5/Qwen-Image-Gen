@@ -111,7 +111,7 @@ def test_index_offers_quality_aspect_and_custom_size(client):
     assert 'name="size_mode" value="preset"' in page
     assert 'name="size_mode" value="custom"' in page
     assert 'name="quality"' in page
-    assert "Среднее (~1K)" in page
+    assert "Medium (~1K)" in page
     for aspect in ("1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"):
         assert f'value="{aspect}"' in page
     assert 'data-high="2752×1536"' in page

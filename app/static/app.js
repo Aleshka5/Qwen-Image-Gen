@@ -84,8 +84,8 @@
         const moves = document.createElement("div");
         moves.className = "preview-moves";
         moves.append(
-          moveButton("←", `Сдвинуть image ${number} левее`, index > 0, () => move(index, index - 1)),
-          moveButton("→", `Сдвинуть image ${number} правее`, index < selected.length - 1, () => move(index, index + 1)),
+          moveButton("←", `Move image ${number} left`, index > 0, () => move(index, index - 1)),
+          moveButton("→", `Move image ${number} right`, index < selected.length - 1, () => move(index, index + 1)),
         );
         figure.append(moves);
       }
@@ -127,7 +127,7 @@
     selected.forEach((item) => URL.revokeObjectURL(item.url));
     const files = [...fileInput.files];
     if (files.length > MAX_IMAGES) {
-      setStatus(`Выбрано ${files.length} файлов — оставьте не больше ${MAX_IMAGES}`, true);
+      setStatus(`Selected ${files.length} files — keep at most ${MAX_IMAGES}`, true);
     } else {
       setStatus("");
     }
@@ -164,7 +164,7 @@
     submit.disabled = true;
     logsEl.replaceChildren();
     logsEl.hidden = true;
-    setStatus("Генерация запущена. Первый запрос после старта ждёт загрузки весов — это несколько минут.");
+    setStatus("Generation started. The first request after startup waits for the weights to load — that takes several minutes.");
 
     const body = new FormData(form);
     body.delete("images");
@@ -224,14 +224,14 @@
         gallery.append(link);
       });
 
-      meta.textContent = `${payload.width}×${payload.height} · seed ${payload.seed} · ${payload.duration} с на GPU`;
+      meta.textContent = `${payload.width}×${payload.height} · seed ${payload.seed} · ${payload.duration} s on GPU`;
       const notSaved = payload.saved === false && typeof payload.storage_error === "string"
         ? payload.storage_error
         : "";
       storageError.textContent = notSaved;
       storageError.hidden = !notSaved;
       result.hidden = false;
-      setStatus(`Готово за ${((performance.now() - started) / 1000).toFixed(1)} с`);
+      setStatus(`Done in ${((performance.now() - started) / 1000).toFixed(1)} s`);
     } catch (error) {
       setStatus(error.message, true);
     } finally {
