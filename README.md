@@ -3,6 +3,22 @@
 A Flask image-generation service based on [Qwen/Qwen-Image-2.1](https://huggingface.co/Qwen/Qwen-Image-2.1),
 built for a **Tesla V100 32 GB**: up to 10 reference photos, a choice of resolution, and an English prompt.
 
+It runs as **two containers with one API**:
+
+```
+browser ──► Auth Gateway ──► qwen-image      Flask, UI, JSON API, WebStorage, no torch, no GPU
+                                 │
+                                 │  POST /v1/generate (multipart)  ──►  text/event-stream
+                                 ▼
+                             qwen-inference  torch 2.7.1+cu126, Qwen-Image 2.1, the GPU,
+                                             weight cache, the pipeline and its logs
+```
+
+The browser-facing protocol is unchanged: same pages, same JSON, same `/api/logs` polling.
+What changed is where the weights live — the pipeline moved, as is, into its own container and
+streams its log lines back over SSE. The contract is in [docs/inference_api.md](docs/inference_api.md),
+the reasoning in [ADR 0011](docs/adr/0011-split-inference-process.md).
+
 ---
 
 ## Network and access
@@ -16,9 +32,11 @@ The gateway strips incoming client `X-Auth-*` headers. This service has no login
 The exception is `POST /api/generate` and `POST /api/mask-fill`: `X-Auth-User-Id` and `X-Auth-Email` are read only to sign the save into WebStorage.
 `GET` routes, including `GET /mask-fill`, do not use those headers. A request that arrived here is already allowed.
 The trust boundary is the network itself: `qwen_image_gen_network` may contain only the gateway and `qwen-image`.
+`qwen-inference` is the second half of the same service (its pipeline), serves no UI, and is called only by `qwen-image`
+over its private HTTP contract; do not put any other container on that network.
 WebStorage is not on `qwen_image_gen_network`. Any other container on that network bypasses the role check.
 
-To call WebStorage after a successful generation or mask fill, this container also joins the Auth network.
+To call WebStorage after a successful generation or mask fill, `qwen-image` also joins the Auth network.
 `AUTH_DOCKER_NETWORK` is the Auth stack network (`deploy_auth_network` when Auth is started from `Auth-Service/deploy`).
 This repository does not create it: the Auth stack must already be up.
 On that network the container keeps the name `qwen-image` and calls the DNS name `app`, which is what WebStorage is called there.
@@ -32,6 +50,7 @@ The archive address in `.env` is `WEBSTORAGE_URL=http://app:8000`.
 `GET /healthz` is anonymous in the application. The gateway serves that path without a role, for operator probes. Everything else requires the `image` role.
 
 > **Never add `-p 8000:8000` or a `ports` section to `compose.yaml`.** That would put the GPU UI on the host network next to the gateway and bypass it.
+> The same holds for `8010` — the inference port is private to `qwen_image_gen_network`.
 
 ---
 
@@ -49,10 +68,12 @@ Qwen-Image-2.1 is a 7B single-stream DiT and a **Qwen3-VL 8B** text encoder.
 The encoder **does not go on the card as a whole**: together with the DiT and the VAE it takes about 33 GB. The vision tower and the first decoder layers live in VRAM (references pass through them); the tail lives in RAM.
 
 Diffusers assumes every pipeline module is on one device, so `text_encoder.to("cpu")`
-would break `__call__`. Instead, [`app/offload.py`](app/offload.py) proxies the encoder: from the outside it
+would break `__call__`. Instead, [`inference/pipeline/offload.py`](inference/pipeline/offload.py) proxies the encoder: from the outside it
 reports `device=cuda`, inside it computes on CPU (except vision and the GPU layers), and it returns embeddings to the GPU.
 
 ### Memory modes (`MEMORY_MODE`)
+
+Read by `qwen-inference` only.
 
 | Mode | VRAM | Speed | When to use it |
 |---|---|---|---|
@@ -88,7 +109,7 @@ Check that Podman sees the card through CDI:
 podman run --rm --device nvidia.com/gpu=all docker.io/nvidia/cuda:12.6.3-base-ubuntu22.04 nvidia-smi
 ```
 
-`compose.yaml` requests the same device: `devices: [nvidia.com/gpu=all]`. Without a CDI spec on the host, the GPU does not enter the container.
+`compose.yaml` requests the same device on `qwen-inference`: `devices: [nvidia.com/gpu=all]`. Without a CDI spec on the host, the GPU does not enter the container.
 
 ### 2. Prepare the environment
 
@@ -96,18 +117,31 @@ podman run --rm --device nvidia.com/gpu=all docker.io/nvidia/cuda:12.6.3-base-ub
 cp .env.example .env
 ```
 
-In `.env`, set at least `MODEL_ID` / `PIPELINE_CLASS` (if you need another revision) and, for gated repositories, `HF_TOKEN`.
+Both containers read the same `.env`; its sections say which one reads what.
+Set at least `MODEL_ID` / `PIPELINE_CLASS` (if you need another revision) and, for gated repositories, `HF_TOKEN`.
+`INFERENCE_URL` is how `qwen-image` finds the pipeline: `http://qwen-inference:8010` inside the network.
 
-### 3. Build the image
+### 3. Build the images
+
+Two images, because they have two different contracts and two different lifetimes:
 
 ```bash
-podman build -t qwen-image-service:latest -f Dockerfile .
+podman build -t localhost/qwen-inference:latest -f Dockerfile .
 ```
 
-The build is multi-stage: `base` (CUDA + system Python 3.10) → `ml` (`uv sync --frozen --no-dev --group ml`: torch 2.7.1+cu126, diffusers, transformers, optimum-quanto from the lock) → `app` (service code; gunicorn is already a project dependency).
+```bash
+podman build -t localhost/qwen-image-service:latest -f Dockerfile.web .
+```
+
+`Dockerfile` builds the inference image: `base` (CUDA + system Python 3.10) → `ml`
+(`uv sync --frozen --no-dev --group ml`: torch 2.7.1+cu126, diffusers, transformers, optimum-quanto from the lock) → `app` (the `inference/` package).
 A code change rebuilds only `app`; the `ml` stage comes from the layer cache.
+
+`Dockerfile.web` builds the orchestrator from the same lock **without the `ml` group**: Flask, gunicorn, Pillow.
+That is ~200 MB instead of ~8 GB, and it cannot import torch even by accident.
+
 Do not use `--no-cache` without a reason — it reinstalls the whole ML stack (the wheels themselves
-still come from the build's uv cache, not from the network). The `dev` group is not installed in the image.
+still come from the build's uv cache, not from the network). The `dev` group is not installed in either image.
 
 To check only the ML stack, without building the service:
 
@@ -134,28 +168,43 @@ The Auth stack must already be up before start: on that network WebStorage answe
 
 ### 5. Start
 
-Port 8000 is not published on the host — see [Network and access](#network-and-access).
-The container joins both networks: `qwen_image_gen_network` and the Auth network.
+Start the pipeline first: it loads the weights and answers `/healthz` long before it is `loaded`.
+Port 8010 is not published on the host — see [Network and access](#network-and-access).
+
+```bash
+podman run -d --name qwen-inference \
+  --network qwen_image_gen_network \
+  --device nvidia.com/gpu=all \
+  --env-file .env \
+  -v qwen-hf-cache:/data/huggingface \
+  --shm-size=8g --memory=64g \
+  localhost/qwen-inference:latest
+```
+
+Then the orchestrator. It needs no GPU and no weight cache; it keeps the network name `qwen-image`,
+which is what the gateway proxies to.
 
 ```bash
 podman run -d --name qwen-image \
   --network qwen_image_gen_network \
   --network "${AUTH_DOCKER_NETWORK:-deploy_auth_network}" \
-  --device nvidia.com/gpu=all \
   --env-file .env \
-  -v qwen-hf-cache:/data/huggingface \
   -v qwen-outputs:/data/outputs \
-  --shm-size=8g --memory=64g \
-  qwen-image-service:latest
+  --memory=2g \
+  localhost/qwen-image-service:latest
 ```
 
-The first start downloads ~33 GB of weights and quantizes the DiT. That takes tens of minutes. Progress is in the logs:
+The first start of `qwen-inference` downloads ~33 GB of weights and, in `int8`, quantizes the DiT.
+That takes tens of minutes. Progress is in the logs:
 
 ```bash
-podman logs -f qwen-image
+podman logs -f qwen-inference
 ```
 
-Readiness is checked from inside the network or from inside the container (the image has `curl`):
+Every generation logs to the same place, one line per pipeline step; the browser reads the same lines through `/api/logs`.
+
+Readiness is checked from inside the network or from inside the container (both images have `curl`).
+The orchestrator reports its own state **and** the inference state:
 
 ```bash
 podman run --rm --network qwen_image_gen_network docker.io/curlimages/curl -s http://qwen-image:8000/healthz
@@ -165,25 +214,42 @@ podman run --rm --network qwen_image_gen_network docker.io/curlimages/curl -s ht
 podman exec qwen-image curl -fsS http://127.0.0.1:8000/healthz
 ```
 
-`{"loaded": true}` means the model is in memory and the service accepts requests. The UI is at `https://image.filenkov.store/` (through the gateway).
+```bash
+podman exec qwen-inference curl -fsS http://127.0.0.1:8010/healthz
+```
 
-Nothing listens on public `:8000` on the host. Both commands should print nothing:
+`{"loaded": true}` from `qwen-image` means the pipeline behind it is loaded and the service accepts requests.
+The UI is at `https://image.filenkov.store/` (through the gateway).
+
+Nothing listens on public `:8000` or `:8010` on the host. Both commands should print nothing:
 
 ```bash
-podman port qwen-image; ss -ltn | grep :8000
+podman port qwen-image; podman port qwen-inference; ss -ltn | grep -E ':(8000|8010)'
+```
+
+To watch the stream the orchestrator consumes, ask the inference container directly:
+
+```bash
+podman run --rm --network qwen_image_gen_network -v "$PWD":/work:ro -w /work docker.io/curlimages/curl -N \
+  -X POST http://qwen-inference:8010/v1/generate \
+  -F "prompt=a cinematic portrait, soft rim light" -F "width=512" -F "height=512" -F "steps=4" -F "seed=7"
 ```
 
 ### Podman Compose
 
-`compose.yaml` starts the same `qwen-image` container (image `qwen-image-service:latest`) on two external networks at once: `qwen_image_gen_network` and `deploy_auth_network`. Both networks must exist before start. Step 4 creates the first. The Auth stack creates the second; this repository does not.
+`compose.yaml` starts both containers on the external `qwen_image_gen_network`; `qwen-image` additionally joins `deploy_auth_network`.
+Both networks must exist before start. Step 4 creates the first. The Auth stack creates the second; this repository does not.
 
-The file sets `env_file: .env`, volumes `qwen-hf-cache` and `qwen-outputs`, `shm_size: 8gb`, `mem_limit: 64g`, and the CDI device `nvidia.com/gpu=all`. There is no `ports` section: port 8000 stays inside the networks. `restart: always` brings the container back after the Podman daemon restarts.
+The file sets `env_file: .env` for both, `shm_size: 8gb`, `mem_limit: 64g` and the CDI device on `qwen-inference`,
+and the volumes `qwen-hf-cache` (inference) and `qwen-outputs` (orchestrator). There is no `ports` section:
+8000 and 8010 stay inside the networks. `restart: always` brings the containers back after the Podman daemon restarts.
 
 ```bash
 podman compose up -d
 ```
 
-`podman compose up -d` on an already running service recreates the container and loads the model again. Logs: `podman compose logs -f`.
+`podman compose up -d` on an already running stack recreates the containers; `qwen-inference` loads the model again.
+Logs: `podman compose logs -f qwen-inference qwen-image`.
 
 ---
 
@@ -266,6 +332,12 @@ From outside, requests go to `https://image.filenkov.store/api/mask-fill` and ne
 
 Save rules match `POST /api/generate`. A UUID `X-Auth-User-Id` saves the run and returns `saved: true`. Without a UUID, WebStorage is not called and `storage_error` is `not saved: no user id`. If WebStorage returned an error, timed out, or was unreachable, the response is still `200`: `saved` is `false`, `storage_error` is the error text, there is no `storage_id`, and `images` still point at the local PNG. Validation errors are `400`, a pipeline that is unavailable or out of memory is `503`, and an upload that is too large is `413`. WebStorage is not called in those cases.
 
+### `POST /v1/generate` — the internal contract
+
+`qwen-image` → `qwen-inference`, never exposed to the gateway. `multipart/form-data` in,
+`text/event-stream` out: `start`, one `log` per pipeline line, then `done` with the PNGs in base64
+or `error`. Field by field, with timeouts and failure semantics: [docs/inference_api.md](docs/inference_api.md).
+
 ### Other endpoints
 
 | Method | Path | Purpose |
@@ -273,8 +345,9 @@ Save rules match `POST /api/generate`. A UUID `X-Auth-User-Id` saves the run and
 | `GET` | `/` | Web form for generation |
 | `GET` | `/customize` | Web form for customizing one photo |
 | `GET` | `/mask-fill` | Web form for filling a painted region of one photo |
-| `GET` | `/healthz` | Status, memory mode, model load error |
+| `GET` | `/healthz` | Status, memory mode, model load error, and the inference URL it polls |
 | `GET` | `/api/config` | Limits and the list of resolution presets |
+| `GET` | `/api/logs` | Log lines after an id: the local ones plus the pipeline lines from the SSE stream |
 | `GET` | `/outputs/<name>` | Finished image (the latest `KEEP_OUTPUTS` files are kept) |
 
 ---
@@ -282,29 +355,44 @@ Save rules match `POST /api/generate`. A UUID `X-Auth-User-Id` saves the run and
 ## Layout
 
 ```
-app/
-  config.py      snapshot of settings from the environment
-  offload.py     text-encoder proxy (weights in RAM, interface "as if on GPU")
-  generator.py   pipeline load, memory modes, generation under the GPU lock
-  imaging.py     resolution presets, upload validation, saving results
-  maskfill.py    pair the main photo, the mask, and ordered references
-  routes.py      web form and JSON API
-  __init__.py    application factory, background model preload
-tests/           pytest suite, runs without a GPU and without ML dependencies
-wsgi.py          gunicorn entry point
-pyproject.toml   web dependencies, ml group (torch cu126), and dev group
-Dockerfile       CUDA 12.6 + uv image; gunicorn listens on 0.0.0.0:8000
-compose.yaml     two external networks, GPU, volumes, shm 8gb, memory 64g; no host port
+app/                the orchestrator (image: localhost/qwen-image-service:latest)
+  config.py         settings of this process: inference URL, timeouts, limits
+  inference.py      HTTP + SSE client of the inference container
+  generator.py      facade over that client, under the names routes already used
+  imaging.py        resolution presets, upload validation, saving results
+  maskfill.py       pair the main photo, the mask, and ordered references
+  logbuf.py         ring buffer behind /api/logs (local lines + pipeline lines)
+  routes.py         web form and JSON API
+  __init__.py       application factory
+inference/          the pipeline (image: localhost/qwen-inference:latest)
+  app.py            POST /v1/generate -> SSE, GET /healthz
+  logstream.py      logging -> per-request queue -> event: log
+  config.py         model, memory mode, precision, port
+  pipeline/
+    generator.py    pipeline load, memory modes, generation under the GPU lock (moved as is)
+    offload.py      text-encoder proxy (weights in RAM, interface "as if on GPU")
+    types.py        request/result/error shared by both sides
+wsgi.py             gunicorn entry point of the orchestrator
+inference/wsgi.py   gunicorn entry point of the pipeline
+tests/              pytest suite, runs without a GPU and without ML dependencies
+pyproject.toml      web dependencies, ml group (torch cu126), and dev group
+Dockerfile          CUDA 12.6 + torch image; gunicorn on 0.0.0.0:8010 (inference)
+Dockerfile.web      python:3.10-slim image; gunicorn on 0.0.0.0:8000 (orchestrator)
+compose.yaml        both containers on qwen_image_gen_network; GPU and caches split; no host port
 ```
 
-Generation is serialized with `threading.Lock`: one card, one job at a time. Concurrent HTTP requests wait
-in the queue instead of fighting over VRAM. That is why gunicorn starts with `--workers 1 --threads 4 --timeout 0`.
+Generation is serialized with `threading.Lock` inside `qwen-inference`: one card, one job at a time. Concurrent requests wait
+in the queue instead of fighting over VRAM. That is why both containers run with `--workers 1`.
+The inference container runs `--threads 4`: one thread holds the SSE stream, another must answer `/healthz`
+while a job is running. The orchestrator runs `--threads 8`: one thread waits on the stream, the page keeps polling `/api/logs`.
 
 ---
 
 ## Tests
 
-Tests replace the generator with a stub: torch, diffusers, and a GPU are not required.
+Tests replace the pipeline: torch, diffusers, a GPU, and a running container are not required.
+`app.generator` is stubbed before the package is imported; `inference.app` is built with a fake pipeline factory;
+`app.inference` is exercised against a real SSE server on `127.0.0.1`.
 
 ```bash
 uv sync
@@ -325,6 +413,7 @@ RUN_PODMAN_TESTS=1 uv run pytest -m podman
 ## Documentation
 
 - [API contract](docs/api-contract.md)
+- [Internal inference contract (SSE)](docs/inference_api.md)
 - [Design](docs/design.md)
 - [Architecture decisions](docs/adr/)
 - [Tests](docs/tests.md)
@@ -332,6 +421,10 @@ RUN_PODMAN_TESTS=1 uv run pytest -m podman
 ---
 
 ## Diagnostics
+
+**`{"loaded": false}` from `qwen-image`** — ask the pipeline itself, it carries the error text:
+`podman exec qwen-inference curl -fsS http://127.0.0.1:8010/healthz`. If that is unreachable, `qwen-image` cannot resolve
+`INFERENCE_URL` (wrong network, or the inference container is down); `load_error` on the orchestrator starts with "инференс недоступен".
 
 **`CUDA out of memory`** — drop extra references, lower the resolution to `1024x1024`, and leave `true_cfg_scale=1`.
 Ten photos with guidance above 1 keep two KV caches and do not fit in 32 GB. Then set `MEMORY_MODE=offload`.
@@ -356,5 +449,9 @@ on CPU. Go back to `TEXT_ENCODER_DTYPE=float32`.
 **Slow, several minutes per frame** — expected for 2048 and 40 steps on a V100 without FlashAttention.
 `true_cfg_scale` above 1 doubles the transformer pass; for 2.1 leave it at 1. Resolution `1024x1024` is noticeably faster.
 
-**Weights download on every start** — the volume `qwen-hf-cache:/data/huggingface` is not attached, or `HF_HOME` in `.env`
+**Weights download on every start** — the volume `qwen-hf-cache:/data/huggingface` is not attached to `qwen-inference`, or `HF_HOME` in `.env`
 points somewhere else.
+
+**The page shows the pipeline log only after the image is ready** — something between the two containers buffers the stream.
+The response sets `X-Accel-Buffering: no`; check that no proxy in front of `qwen-inference` ignores it, and that
+`INFERENCE_URL` points at gunicorn directly (it must not go through the gateway).

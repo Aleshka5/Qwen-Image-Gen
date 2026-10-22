@@ -34,7 +34,8 @@ def test_healthz_is_anonymous(client, fake_generator):
     assert response.status_code == 200
     body = response.get_json()
     assert body["status"] == "ok"
-    assert set(body) == {"status", "model", "memory_mode", "loaded", "load_error"}
+    assert set(body) == {"status", "model", "memory_mode", "loaded", "load_error", "inference"}
+    assert body["inference"].startswith("http://")
     assert body["loaded"] is False
     assert body["load_error"] is None
 

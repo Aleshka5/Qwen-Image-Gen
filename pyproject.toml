@@ -6,12 +6,14 @@ dependencies = [
     "Flask>=3.0.3",
     "gunicorn>=23.0.0",
     "python-dotenv>=1.0.1",
+    # Оркестратор тоже режет и склеивает картинки (imaging, maskfill) — Pillow
+    # нужен обоим образам, не только ml-группе инференса.
+    "Pillow>=10.4.0",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8",
-    "Pillow>=10.4.0",
 ]
 # QwenImage21Pipeline (Qwen/Qwen-Image-2.1) exists only on main — release 0.40.0 does not have it.
 # Pinned to the main commit from 2026-09-25; after 0.41.0, switch back to diffusers>=0.41.0.
@@ -25,7 +27,6 @@ ml = [
     "sentencepiece>=0.2.0",
     "protobuf>=4.25.0",
     "huggingface-hub>=0.35.0",
-    "Pillow>=10.4.0",
     "torch==2.7.1",
     "torchvision==0.22.1",
 ]

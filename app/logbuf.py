@@ -2,6 +2,10 @@
 
 Gunicorn держит один воркер и несколько потоков: генерация занимает поток,
 а ``GET /api/logs`` отвечает из другого. Перезапуск контейнера для этого не нужен.
+
+Писателей два: локальный ``logging`` оркестратора (валидация, сохранение) и
+строки пайплайна, которые приезжают событиями ``log`` из контейнера инференса
+(``LiveLogBuffer.push``). Для страницы это одни и те же строки в одном порядке.
 """
 
 from __future__ import annotations
@@ -30,10 +34,14 @@ class LiveLogBuffer(logging.Handler):
         except Exception:
             self.handleError(record)
             return
+        self.push(record.levelname, message)
+
+    def push(self, level: str, message: str) -> None:
+        """Готовая строка. Id выдаётся здесь, чтобы ``/api/logs?after=N`` работал как раньше."""
         with self._guard:
             line = {
                 "id": self._next_id,
-                "level": record.levelname,
+                "level": level,
                 "message": message,
             }
             self._next_id += 1

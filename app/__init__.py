@@ -24,13 +24,13 @@ def _configure_logging() -> None:
 
 
 def _preload_in_background() -> None:
-    """Прогреваем модель в фоне, чтобы первый запрос не ждал загрузку весов."""
+    """Спрашиваем инференс о состоянии в фоне: веса грузит его собственный старт."""
 
     def worker() -> None:
         try:
             generator.ensure_loaded()
         except Exception:
-            log.exception("Предзагрузка модели не удалась; повтор произойдёт на первом запросе")
+            log.exception("Инференс не ответил при старте; повтор произойдёт на первом запросе")
 
     threading.Thread(target=worker, name="model-preload", daemon=True).start()
 

@@ -1,3 +1,6 @@
+# Контейнер инференса Qwen-Image 2.1. Единственный, кому нужны карта и torch;
+# Flask-оркестратор живёт в Dockerfile.web и о весах ничего не знает.
+#
 # Tesla V100 (SM 7.0). torch 2.7.1 + cu126: the cu126 wheels are still built with sm_70,
 # and current diffusers/optimum-quanto require torch>=2.6 (cu121 stops at 2.5.1).
 # CUDA 13 (cu130) no longer supports Volta — do not move past cu126/cu128.
@@ -8,7 +11,7 @@
 #   base — CUDA runtime + system Python 3.10 (Ubuntu 22.04) and uv
 #   ml   — uv sync: project dependencies and the ml group (torch 2.7.1+cu126 from the lock);
 #          heavy, rebuilt when pyproject.toml or uv.lock changes
-#   app  — service code; rebuilds in seconds
+#   app  — inference service code (inference/); rebuilds in seconds
 #
 # The uv cache is a cache mount: it survives even `podman build --no-cache`,
 # so the torch wheels (~3 GB) are not downloaded again.
@@ -61,23 +64,23 @@ print('torch', torch.__version__, 'torchvision', torchvision.__version__, \
 # ──────────────────────────────── app ───────────────────────────────
 FROM ml AS app
 
-# Weight cache and results live on volumes so they are not lost with the container
+# Weight cache lives on a volume so a recreate does not download 33 GB again.
 RUN useradd --create-home --uid 1000 service \
-    && mkdir -p /data/huggingface /data/outputs \
+    && mkdir -p /data/huggingface \
     && chown -R service:service /data
 
-COPY --chown=service:service app ./app
-COPY --chown=service:service wsgi.py .
+COPY --chown=service:service inference ./inference
 USER service
 
 ENV HF_HOME=/data/huggingface \
-    OUTPUT_DIR=/data/outputs \
-    PORT=8000
+    PORT=8010
 
-EXPOSE 8000
+EXPOSE 8010
 HEALTHCHECK --interval=30s --timeout=5s --start-period=180s --retries=3 \
-    CMD curl -fsS http://localhost:8000/healthz || exit 1
+    CMD curl -fsS http://localhost:8010/healthz || exit 1
 
 # One worker: the model fills VRAM, and extra workers would duplicate it.
+# Threads > 1 is what makes the design work: one thread streams a generation,
+# another answers /healthz (the control plane probes it during a job).
 # timeout 0 — generation on a V100 easily exceeds the default 30s.
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "1", "--threads", "4", "--timeout", "0", "--graceful-timeout", "60", "--access-logfile", "-", "wsgi:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8010", "--workers", "1", "--threads", "4", "--timeout", "0", "--graceful-timeout", "60", "--access-logfile", "-", "inference.wsgi:app"]

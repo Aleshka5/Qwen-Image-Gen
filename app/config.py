@@ -1,4 +1,10 @@
-"""Конфигурация сервиса. Все значения читаются из окружения (см. .env.example)."""
+"""Конфигурация Flask-оркестратора. Все значения читаются из окружения (см. .env.example).
+
+Модель, память и точность здесь больше не настраиваются: веса живут в контейнере
+инференса, и он читает свои настройки сам (``inference/config.py``). Оркестратору
+из них нужны две вещи — адрес сервиса и сколько ждать поток; остальное состояние
+приезжает в ``GET /healthz``.
+"""
 
 from __future__ import annotations
 
@@ -32,28 +38,20 @@ class Settings:
     """Неизменяемый снимок настроек, создаётся один раз при старте процесса."""
 
     # --- модель ---------------------------------------------------------
+    # Только для отображения: /healthz и заголовок в UI. Веса читает инференс.
     model_id: str = os.getenv("MODEL_ID", "Qwen/Qwen-Image-2.1")
-    model_revision: str | None = os.getenv("MODEL_REVISION") or None
-    pipeline_class: str = os.getenv("PIPELINE_CLASS", "auto")
+    # Фолбэк для /healthz, если инференс ещё не ответил. Истина — у него.
+    memory_mode: str = os.getenv("MEMORY_MODE", "")
 
-    # --- размещение и точность ------------------------------------------
-    # fp16 | int8 | offload  (see README, "Memory modes")
-    memory_mode: str = os.getenv("MEMORY_MODE", "int8").strip().lower()
-    device: str = os.getenv("DEVICE", "cuda")
-    text_encoder_device: str = os.getenv("TEXT_ENCODER_DEVICE", "cpu")
-    text_encoder_dtype: str = os.getenv("TEXT_ENCODER_DTYPE", "float16")
-    # Часть Qwen3-VL, которая всё же живёт в VRAM (в fp16): vision-башня и первые N из 36 слоёв.
-    # Слой — ~0.4 GB VRAM вместо ~0.4 GB RAM в fp16 (~0.8 GB, если остаток в fp32).
-    # 24 слоя покрывают DeepStack (8/16/24) и снимают с RAM большую часть энкодера.
-    text_encoder_gpu_layers: int = _int("TEXT_ENCODER_GPU_LAYERS", 24)
-    text_encoder_gpu_vision: bool = _bool("TEXT_ENCODER_GPU_VISION", True)
-    # native — PyTorch SDPA. Имя "sdpa" принимается как алиас (см. generator).
-    attention_backend: str = os.getenv("ATTENTION_BACKEND", "native")
-    # Запасной путь, если полный кадр не влез даже после выноса DiT в RAM.
-    vae_tiling: bool = _bool("VAE_TILING", True)
-    vae_slicing: bool = _bool("VAE_SLICING", True)
-    # Сторона тайла decode в пикселях. Кратность сжатию VAE выравнивается в generator.
-    vae_tile_size: int = _int("VAE_TILE_SIZE", 1536)
+    # --- контейнер инференса --------------------------------------------
+    # Имя сервиса в общей сети (в compose — контейнер qwen-inference).
+    inference_url: str = os.getenv("INFERENCE_URL", "http://qwen-inference:8010").rstrip("/")
+    # Секунды. Поток живёт всю генерацию; между событиями инференс шлёт keepalive,
+    # поэтому таймаут — предел на весь job (как REQUEST_TIMEOUT у монолита).
+    inference_timeout: float = _float("INFERENCE_TIMEOUT", 1800)
+    # Проба /healthz: короткая, её зовёт и страница, и control plane.
+    inference_health_timeout: float = _float("INFERENCE_HEALTH_TIMEOUT", 3)
+    # Спросить инференс при старте (веса он грузит сам, это только строка в логе).
     preload_model: bool = _bool("PRELOAD_MODEL", True)
 
     # --- параметры генерации --------------------------------------------
@@ -76,8 +74,6 @@ class Settings:
     host: str = os.getenv("HOST", "0.0.0.0")
     port: int = _int("PORT", 8000)
     output_dir: Path = field(default_factory=lambda: _path("OUTPUT_DIR", "/data/outputs"))
-    hf_home: str = os.getenv("HF_HOME", "/data/huggingface")
-    request_timeout: int = _int("REQUEST_TIMEOUT", 1800)
     keep_outputs: int = _int("KEEP_OUTPUTS", 200)
     log_level: str = os.getenv("LOG_LEVEL", "INFO").upper()
     # Куда POST /api/generate складывает удачный прогон. Таймаут только на этот вызов.

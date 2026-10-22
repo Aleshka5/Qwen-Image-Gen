@@ -1,0 +1,60 @@
+# Flask-оркестратор: UI, JSON API, сохранение в WebStorage и клиент инференса.
+# Ни torch, ни CUDA, ни весов — поэтому образ на python:3.10-slim вместо CUDA.
+# Пайплайн живёт в контейнере qwen-inference (Dockerfile), сюда он приходит
+# только потоком SSE: POST /v1/generate -> log* / done | error.
+#
+# Сборка идёт из того же uv.lock, что и у инференса, но без группы ml: ~150 MB
+# против ~8 GB. Две картинки вместо одной — потому что это два разных контракта:
+# GPU-сервис с весами и веб-сервис, который можно перезапускать как угодно часто.
+
+# ─────────────────────────────── base ───────────────────────────────
+FROM docker.io/library/python:3.10-slim AS base
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    UV_PYTHON_PREFERENCE=only-system \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_LINK_MODE=copy \
+    UV_COMPILE_BYTECODE=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /srv/app
+
+ENV VIRTUAL_ENV=/srv/app/.venv \
+    PATH="/srv/app/.venv/bin:${PATH}"
+
+# Project dependencies only (Flask, gunicorn, Pillow). No ml group, no dev group.
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project
+
+# ──────────────────────────────── app ───────────────────────────────
+FROM base AS app
+
+# Generated images live on a volume so a recreate does not lose them.
+RUN useradd --create-home --uid 1000 service \
+    && mkdir -p /data/outputs \
+    && chown -R service:service /data
+
+COPY --chown=service:service app ./app
+COPY --chown=service:service wsgi.py ./
+USER service
+
+ENV OUTPUT_DIR=/data/outputs \
+    PORT=8000
+
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -fsS http://localhost:8000/healthz || exit 1
+
+# One worker: the log buffer and the GPU lock in the inference client are
+# process-local state. Threads stay high because /api/logs is polled from the
+# page while one thread waits on the generation stream.
+# timeout 0 — the request lasts as long as the generation stream does.
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "1", "--threads", "8", "--timeout", "0", "--graceful-timeout", "60", "--access-logfile", "-", "wsgi:app"]

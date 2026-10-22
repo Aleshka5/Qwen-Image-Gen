@@ -1,14 +1,30 @@
-# qwen-image listens on 8000 only inside the networks. Do not add a ports section.
-# The host provides the GPU through NVIDIA CDI `nvidia.com/gpu=all`
+# Два контейнера: инференс с весами и GPU, поверх него — Flask-оркестратор.
+#
+#   qwen-inference  Dockerfile      torch 2.7.1+cu126, пайплайн Qwen-Image 2.1,
+#                                   GPU, кэш весов, SSE-поток логов и результата
+#   qwen-image      Dockerfile.web  UI, JSON API, WebStorage, клиент инференса;
+#                                   ни карты, ни torch — ~200 MB образа вместо 8 GB
+#
+# Связь между ними — одна HTTP-ручка внутри qwen_image_gen_network:
+# POST http://qwen-inference:8010/v1/generate (multipart) -> text/event-stream.
+# Браузер и Auth Gateway по-прежнему видят только http://qwen-image:8000:
+# протокол страницы не изменился, /api/logs отдаёт те же строки пайплайна.
+#
+# Порты на хост не публикуются: снаружи сервис доступен только Auth Gateway
+# как http://qwen-image:8000 в сети qwen_image_gen_network.
+# GPU хосту известен через NVIDIA CDI `nvidia.com/gpu=all`
 # (`nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`).
+#
+# `depends_on` не ждёт готовности весов: оркестратор спрашивает состояние
+# инференса в /healthz, первый запрос дождётся загрузки сам.
 
 services:
-  qwen-image:
+  qwen-inference:
     build:
       context: .
       dockerfile: Dockerfile
-    image: qwen-image-service:latest
-    container_name: qwen-image
+    image: localhost/qwen-inference:latest
+    container_name: qwen-inference
     env_file: .env
     restart: always
     shm_size: 8gb
@@ -17,6 +33,21 @@ services:
       - nvidia.com/gpu=all
     volumes:
       - qwen-hf-cache:/data/huggingface
+    networks:
+      - qwen_image_gen_network
+
+  qwen-image:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    image: localhost/qwen-image-service:latest
+    container_name: qwen-image
+    env_file: .env
+    restart: always
+    mem_limit: 2g
+    depends_on:
+      - qwen-inference
+    volumes:
       - qwen-outputs:/data/outputs
     networks:
       - qwen_image_gen_network

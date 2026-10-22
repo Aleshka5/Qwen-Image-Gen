@@ -177,9 +177,10 @@ def healthz():
     return jsonify(
         status="ok",
         model=settings.model_id,
-        memory_mode=settings.memory_mode,
+        memory_mode=getattr(generator, "memory_mode", None) or settings.memory_mode,
         loaded=generator.is_loaded,
         load_error=generator.load_error,
+        inference=settings.inference_url,
     )
 
 
