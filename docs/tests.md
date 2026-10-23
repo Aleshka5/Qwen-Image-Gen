@@ -9,13 +9,12 @@ The suite in `tests/` runs under pytest and, by default, needs no GPU, torch, di
 | File | What it holds |
 |---|---|
 | `tests/conftest.py` | Stub for `app.generator`, output directory, Flask client |
-| `tests/test_routes.py` | URL map, generate, customize, errors, archive |
-| `tests/test_no_auth_in_app.py` | No login; `X-Auth-User-Id` and `X-Auth-Email` are read only in `api_generate` and `api_mask_fill`, to sign the WebStorage save |
+| `tests/test_workspace.py` | Projects, shapes, queue, idempotency, render, secrets, on the memory store |
+| `tests/test_no_auth_in_app.py` | No login; identity headers are read only in `_caller` and `_account_name` |
 | `tests/test_imaging.py` | `fit_model_size` and `PhotoFrame` |
-| `tests/test_generate_form.py` | The form shows `storage_error` only when `saved` is false |
 | `tests/test_inference_app.py` | `inference/app.py` SSE contract with a fake pipeline: order of events, errors, keepalive, PNG encoding |
 | `tests/test_inference_client.py` | `app/inference.py` against a real SSE server on `127.0.0.1`: multipart out, log lines into the buffer, PNGs from `done` |
-| `tests/test_deploy_docs.py` | No published port, two containers and two images, split of GPU/volumes/networks, healthchecks, gunicorn |
+| `tests/test_deploy_docs.py` | No published port; web plus two workers; `common_network`; healthchecks; gunicorn |
 | `tests/test_podman_network.py` | Podman network smoke, only with `RUN_PODMAN_TESTS=1` |
 
 ## Pipeline stub
@@ -50,11 +49,11 @@ This needs a local image `qwen-image-service:latest` and `podman`. The marker sk
 The file reads the README, `Dockerfile`, `Dockerfile.web`, and `compose.yaml`. It does not start a container. Invariants it keeps:
 
 - The service start has no `-p`, `--publish`, `-P`, `8000:8000`, or `8010:8010`. README commands do not publish 8000 and do not use `localhost:8000` from the host (`podman exec … localhost:8000` is allowed).
-- Two containers: `qwen-inference` (image `qwen-inference:latest`, GPU device, `qwen-hf-cache`, `shm`/memory limits) and `qwen-image` (image `qwen-image-service:latest`, outputs volume, two networks). Only the orchestrator joins `deploy_auth_network` (in `podman run` it may be `${AUTH_DOCKER_NETWORK:-deploy_auth_network}`). `compose.yaml` has no `ports` section.
+- Three processes from the web image: `qwen-image` (outputs volume, `deploy_auth_network` + `models_network` + `common_network`), `qimg-processor` (`common_network` only), `qimg-orchestrator` (`common_network` + `models_network`). The model container is a separate project. `compose.yaml` has no `ports` section. In `podman run` the auth network may be `${AUTH_DOCKER_NETWORK:-deploy_auth_network}`.
 - The GPU, the weight cache and `shm_size`/`--shm-size` stay on the inference container and never appear on the orchestrator.
-- The README has the public URL, the network name, `Auth Gateway`, upstream `http://qwen-image:8000`, the internal `http://qwen-inference:8010`, `text/event-stream`, `X-Auth-User-Id`, and the sentence that WebStorage is not on `models_network`.
+- The README has the public URL, `Auth Gateway`, `common_network`, upstream `http://qwen-image:8000`, the internal `http://qwen-inference:8010`, `text/event-stream`, `X-Auth-User-Id`, `MONGO_URL`, and the bucket `qimg-images`. WebStorage is no longer the archive.
 - `Dockerfile`: exactly one `CMD`, gunicorn, `--bind 0.0.0.0:8010`, `--workers 1`, `--timeout 0`, argument `inference.wsgi:app`; `HEALTHCHECK` curls `:8010/healthz`; install is `uv sync --frozen --no-dev --group ml --no-install-project`, with no `pip install`.
-- `Dockerfile.web`: exactly one `CMD`, gunicorn, `--bind 0.0.0.0:8000`, `--workers 1`, `--timeout 0`, argument `wsgi:app`; `HEALTHCHECK` curls `:8000/healthz`; install is `uv sync --frozen --no-dev --no-install-project` — the `ml` group must not be there, and only `app/` is copied.
+- `Dockerfile.web`: exactly one `CMD`, gunicorn, `--bind 0.0.0.0:8000`, `--workers 1`, `--timeout 0`, argument `wsgi:app`; `HEALTHCHECK` curls `:8000/healthz`; install is `uv sync --frozen --no-dev --no-install-project` — the `ml` group must not be there. The image copies `app/` and `qimg/`. Workers override the command and disable the healthcheck in compose.
 - `Containerfile` and `deploy/qwen-image.container` are absent. The README documents `uv sync` and `uv run pytest` and links to `docs/`.
 
 Thread counts are asserted only as “more than one” on the inference side: the split needs a thread for the stream and a thread for `/healthz`. See [adr/0006-podman-compose-deploy.md](adr/0006-podman-compose-deploy.md) and [adr/0011-split-inference-process.md](adr/0011-split-inference-process.md).

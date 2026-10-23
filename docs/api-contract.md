@@ -1,263 +1,128 @@
-# HTTP API contract
+# API contract
 
-Behavior is taken from `app/routes.py`, `app/imaging.py`, `app/maskfill.py`, `app/webstorage.py`, `app/logbuf.py`, `app/__init__.py`, and `tests/test_routes.py`. The service is Flask behind gunicorn. From outside, the browser uses `https://image.filenkov.store` (Auth Gateway). This process listens on `0.0.0.0:8000` inside the container and does not log anyone in.
+The browser opens `https://image.filenkov.store`. The Auth Gateway proxies to `http://qwen-image:8000` and injects `X-Auth-User-Id`, `X-Auth-Email`, and `X-Auth-Name`. This process does not check a session. A project route with no UUID user id answers **400** `{"error": "A user id is required"}`. It never answers 401 or 403.
 
-Path, header, and JSON field names below are the wire identifiers. Some validation error strings returned by the code are still Russian; they are quoted as the body the client receives.
+`GET /` is one HTML shell. The workspace is a view stack inside that page. `/customize`, `/mask-fill`, `/api/generate`, `/api/customize`, `/api/mask-fill`, and `/api/logs` are gone.
 
-## Common rules
+Unless a row says otherwise, success JSON is the resource itself or a list wrapped as `{projects|shapes|variants|tasks|providers}`. Errors are `{"error": "..."}`.
 
-- The body of `POST /api/generate`, `POST /api/customize`, and `POST /api/mask-fill` is `multipart/form-data`.
-- Successful JSON does not sort keys (`JSON_SORT_KEYS = false`).
-- Total body size is limited by `MAX_UPLOAD_MB` (default 60). That value is Flask `MAX_CONTENT_LENGTH`.
-- The application has no login, session, cookie, JWT, or role check. The gateway decides who is allowed. A request that reached the process is already allowed.
-- Identity headers are read by `POST /api/generate` and `POST /api/mask-fill`, and only to sign the archive. `GET` routes, including `GET /mask-fill`, and `POST /api/customize` do not use them.
+## Identity and pages
 
-## Route map
+| Method | Path | User id | Body |
+|---|---|---|---|
+| `GET` | `/` | no | HTML shell, account name from `X-Auth-Name` |
+| `GET` | `/healthz` | no | `{status, model, memory_mode, loaded, load_error, inference}` |
+| `GET` | `/api/config` | no | limits, aspect presets, level colors |
+| `GET` | `/api/catalog` | no | provider kinds and their models |
+| `GET` | `/static/ui/...` | no | built workspace assets |
 
-| Method | Path | Response |
+`/healthz` is public on the gateway. `loaded` reports the inference container, not this process.
+
+## Settings
+
+| Method | Path | Body |
 |---|---|---|
-| `GET` | `/` | HTML generate form |
-| `GET` | `/customize` | HTML form for editing one photo |
-| `GET` | `/mask-fill` | HTML form for filling a painted region |
-| `GET` | `/healthz` | JSON status of the process and the model |
-| `GET` | `/api/config` | JSON limits and presets |
-| `GET` | `/api/logs` | JSON ring buffer of logs |
-| `POST` | `/api/generate` | JSON generation result |
-| `POST` | `/api/customize` | JSON photo-edit result |
-| `POST` | `/api/mask-fill` | JSON mask-fill result |
-| `GET` | `/outputs/<name>` | PNG, or JSON 404 |
-| `GET` | `/static/<path:filename>` | Flask static files (`app/static/`) |
+| `GET` | `/api/settings` | `{providers: [...]}` |
+| `POST` | `/api/settings/providers` | kind `wan` or `higgsfield`, plus the fields below |
+| `PATCH` | `/api/settings/providers/:id` | same fields; blank secrets are left unchanged |
+| `DELETE` | `/api/settings/providers/:id` | Local Qwen cannot be deleted |
+| `POST` | `/api/settings/providers/:id/default` | no body |
 
-Flask also registers `HEAD` and `OPTIONS`. No other rules are on the map: `/login` and similar paths return 404.
+Local Qwen is always present with id `local` and kind `qwen`. Wan needs `api_key`, `region` (`singapore`, `virginia`, `beijing`, `frankfurt`), and `workspace_id`. Higgsfield needs `key_id` and `key_secret`. A stored key comes back only as `key_hint` (the last four characters). `secret_enc` is never returned. An empty `SETTINGS_SECRET` rejects the write.
 
-## `GET /healthz`
+## Projects and shapes
 
-Anonymous for the application. The gateway serves this path without the `image` role. The call does **not** load the model (`ensure_loaded` is not called).
-
-```json
-{
-  "status": "ok",
-  "model": "Qwen/Qwen-Image-2.1",
-  "memory_mode": "int8",
-  "loaded": false,
-  "load_error": null
-}
-```
-
-| Field | Meaning |
-|---|---|
-| `status` | always `"ok"` when the process answers |
-| `model` | `MODEL_ID` |
-| `memory_mode` | `MEMORY_MODE` |
-| `loaded` | the pipeline is already in memory |
-| `load_error` | text of the last load error, or `null` |
-
-## `GET /api/config`
-
-```json
-{
-  "model": "Qwen/Qwen-Image-2.1",
-  "max_images": 10,
-  "max_upload_mb": 60,
-  "max_steps": 60,
-  "accepts_images": true,
-  "presets": [
-    {"key": "2048x2048", "label": "1:1 — 2048×2048", "width": 2048, "height": 2048}
-  ]
-}
-```
-
-`presets` is built from `RESOLUTION_PRESETS`: for `high` and `medium`, and for each aspect ratio. `accepts_images` is whether the loaded pipeline accepts an `image` argument. Before the model is loaded, the test stub and the real generator can disagree; after `ensure_loaded` the flag comes from the `__call__` signature.
-
-## `GET /api/logs`
-
-In-process ring buffer (`app/logbuf.py`). The forms need it: generation holds a thread, and the page polls logs from another. Capacity is 400 records. Only records from loggers named `app*` at `INFO` and above are stored.
-
-Query: `after` is an integer id; return lines whose `id` is greater. A missing parameter, an empty string, a non-number, and a negative value all mean `after = 0`.
-
-```json
-{
-  "lines": [
-    {"id": 1, "level": "INFO", "message": "pipeline «denoise» 1/4: …"}
-  ]
-}
-```
-
-The buffer lives in the worker's memory and disappears when the container restarts. It is not an audit log.
-
-## `POST /api/generate`
-
-Form fields:
-
-| Field | Required | Rule |
+| Method | Path | Body |
 |---|---|---|
-| `prompt` | yes | Non-empty string, English only, at most 2000 characters. Edge whitespace is stripped |
-| `negative_prompt` | no | Same length and language limits. An empty field stays an empty string for the archive |
-| `images` | no | Repeated file field, up to `MAX_IMAGES` (10). JPEG, PNG, WEBP, BMP. The long side is shrunk to `INPUT_MAX_SIDE` (1536) |
-| `size_mode` | no | `preset`, `custom`, or omitted — then the legacy `resolution` field is used |
-| `quality` | when `preset` | `high` (~2K) or `medium` (same aspect, about 1024²). An empty value counts as `high` |
-| `aspect` | when `preset` | `1:1`, `4:3`, `3:4`, `3:2`, `2:3`, `16:9`, `9:16`. An empty value is `1:1` |
-| `width`, `height` | when `custom` | Integers 32…3000, then the side is rounded down to a multiple of 32 |
-| `resolution` | legacy | A preset key (`2048x2048`, …) or `WxH` in the same 32…3000 range. An empty field is the first preset, `2048x2048` |
-| `steps` | no | Integer 1…`MAX_STEPS` (60). Default `DEFAULT_STEPS` (40) |
-| `true_cfg_scale` | no | Number 1.0…10.0. Default `DEFAULT_TRUE_CFG_SCALE` (1.0) |
-| `seed` | no | Integer 0…2147483647 (`2**31 - 1`). Empty or `-1` picks `secrets.randbelow(2**31 - 1)`, so 0…2147483646 |
+| `GET` | `/api/projects` | `{projects}` newest first |
+| `POST` | `/api/projects` | multipart `kind=photo\|scratch`, optional `file`, optional `name` |
+| `GET` | `/api/projects/:id` | `{project, shapes}` |
+| `PATCH` | `/api/projects/:id` | `{name}` |
+| `DELETE` | `/api/projects/:id` | `{deleted: true}`; queued tasks become `invalidated` |
+| `GET` | `/api/projects/:id/preview` | PNG, longest side at most 2048 |
+| `POST` | `/api/projects/:id/shapes` | `{parent_id, kind, x, y, w, h}` |
+| `POST` | `/api/projects/:id/commit` | `{parent_id}` saves every sibling and writes an original crop |
+| `PATCH` | `/api/shapes/:id` | move, and resize only before save |
+| `DELETE` | `/api/shapes/:id` | the shape and its children |
+| `POST` | `/api/shapes/:id/type` | `{type: photo\|text}` |
+| `GET` | `/api/shapes/:id/source` | full crop; `?preview=1` thumbnails it |
+| `GET` | `/api/shapes/:id/variants` | `{variants}` |
+| `POST` | `/api/shapes/:id/select` | `{variant_id}` |
+| `GET` | `/api/projects/:id/variants` | scratch variants (no shape) |
+| `POST` | `/api/projects/:id/select` | `{variant_id}` |
 
-Cyrillic in `prompt` and `negative_prompt` is rejected (range `Ѐ–ӿ`).
+Coordinates are 0..1 relative to the parent. Level-1 kinds are `rect` and `full_frame`. Level-2 kinds are `rect` and `circle`. Overlaps are rejected. The cap is `MAX_SHAPES` (20). After commit, size is frozen; delete and move remain. Commit sets `geometry_locked` on the project (level 1) or on the parent shape (level 2), not on the shapes just saved, so a saved part can still receive children.
 
-Native `high` frames: `2048×2048`, `2400×1792`, `1792×2400`, `2528×1696`, `1696×2528`, `2752×1536`, `1536×2752`. `medium` is exactly half of those.
+Level-1 colors come from `level1_colors`. A level-2 photo is `#143d8f`. A level-2 text object is `#8c1a2b`. Text shows the original crop and cannot be generated yet.
 
-If `negative_prompt` is empty, the pipeline receives `DEFAULT_NEGATIVE_PROMPT` (an empty string by default). WebStorage receives the stripped user field, without that default substituted in.
-
-Headers on this method and on `POST /api/mask-fill`:
-
-| Header | Rule |
-|---|---|
-| `X-Auth-User-Id` | UUID (8-4-4-4-12 hex, any case, edge whitespace stripped). Any other text, an empty value, or a missing header means "no user" |
-| `X-Auth-Email` | Optional text. Edge whitespace is stripped; an empty value is not forwarded |
-
-The UUID version is not checked: v4, v1, and the nil UUID are all accepted. `X-Auth-Role`, `Authorization`, `Cookie`, and a form field do not set the user. The application does not verify a JWT.
-
-Success is `200`:
+A shape record:
 
 ```json
 {
-  "seed": 1823486689,
-  "duration": 96.4,
-  "width": 2048,
-  "height": 2048,
-  "images": [{"name": "20260922-124332-3b47ec64.png", "url": "/outputs/20260922-124332-3b47ec64.png"}],
-  "saved": true,
-  "storage_id": "20260927T115012Z-3b47ec64"
-}
-```
-
-| Field | Meaning |
-|---|---|
-| `seed` | The seed that was used (after replacing `-1`) |
-| `duration` | Seconds, `round(..., 2)` |
-| `width`, `height` | The frame passed to the pipeline |
-| `images` | Local PNGs. `name` is the file in `OUTPUT_DIR`, `url` is `GET /outputs/<name>` |
-| `saved` | Whether the run was written to WebStorage |
-| `storage_id` | The `id` string from the 201 response. Present only when `saved` is true |
-| `storage_error` | Why the save failed. Present only when `saved` is false |
-
-Without a valid UUID:
-
-```json
-{
+  "id": "...",
+  "project_id": "...",
+  "parent_id": null,
+  "kind": "rect",
+  "type": null,
+  "color": "#c47b2b",
+  "x": 0.1, "y": 0.1, "w": 0.4, "h": 0.4,
   "saved": false,
-  "storage_error": "not saved: no user id"
+  "geometry_locked": false,
+  "selected_variant_id": null
 }
 ```
 
-That object has no `storage_id`. Local `images` are still returned. WebStorage is not called.
+## Generations
 
-If the UUID was valid and the archive failed (HTTP error, disconnect, timeout, a status other than 201, or no string `id`), the generation status stays `200`: `saved: false`, and `storage_error` is the `error` field from the Storage JSON body, or the status code (`"503"`), `"timeout"`, `"connection error"`, or `"invalid storage response"`. The pictures stay on disk.
+`POST /api/generations` is multipart.
 
-Only the first PNG goes to the archive (`images[0]`). The pipeline is called with `num_images_per_prompt = 1`.
+| Field | Notes |
+|---|---|
+| `project_id` | required |
+| `shape_id` | required for `customize` and `mask_fill`; absent for scratch `generate` |
+| `mode` | `generate`, `customize`, or `mask_fill` |
+| `provider_id` | `local` or a saved provider |
+| `model` | an id from that provider's enabled list |
+| `prompt` | required, English, at most 2000 characters |
+| `negative_prompt` | English, optional |
+| `steps`, `true_cfg_scale` | same bounds as the old form |
+| `copies` | 1..`MAX_COPIES` (8). Above 1, every seed is random |
+| `seed` | used only when `copies` is 1; blank or `-1` is random |
+| `size_mode`, `quality`, `aspect`, `width`, `height` | scratch `generate` only. Edit modes use the crop size |
+| `mask` | one file for `mask_fill`, same pixel size as the crop, not fully black |
+| `images` | reference files, in order |
 
-`400`, `413`, and `503` do not call WebStorage.
+The response is `{reused, tasks}`. A task id is a UUID. The same user-controlled inputs, including the artifact bytes and an explicit single seed, return the existing `queued`, `running`, `pending`, or `done` batch instead of a new one. Random seeds are not part of that key. A batch whose tasks all failed may be submitted again.
 
-## `POST /api/customize`
+Artifact order stored with the task: `source` (the original crop, never a selected variant), then `mask` when the mode is mask fill, then each `reference`. The pipeline still fits that crop to the 512–2752, multiple-of-32 frame. The editor does not downscale it first.
 
-Edits one photo. The size in the response is the original file frame, not the intermediate model frame. This method does not write to WebStorage and does not read `X-Auth-*` headers.
-
-| Field | Required | Rule |
-|---|---|---|
-| `system_prompt` | yes | Same as `prompt` on generate: English, up to 2000 characters |
-| `negative_prompt` | no | Same as on generate |
-| `image` | yes | Exactly one file, the same formats. The field name is `image`, not `images` |
-| `steps` | no | 1…`MAX_STEPS`, default `DEFAULT_STEPS` |
-| `true_cfg_scale` | no | 1.0…10.0 |
-| `seed` | no | Same as on generate |
-
-The model receives a frame fitted into `MIN_SIDE`…`MAX_SIDE` (512…2752) on a multiple of 32. The response JSON contains `seed`, `duration`, `width`, `height`, and `images`. `width` and `height` are the uploaded photo's size. The saved PNG is restored to that size (`PhotoFrame.restore`). There are no `saved`, `storage_id`, or `storage_error` fields.
-
-## `GET /mask-fill`
-
-HTML form for painting a mask on one photo and, optionally, ordering reference photos. This route does not read identity headers and does not call WebStorage.
-
-## `POST /api/mask-fill`
-
-Fills the white region of a mask on one photo. There is no size picker. The JSON `width` and `height` are the uploaded photo's size. The model frame is that photo fitted the same way customisation fits a file (`fit_model_size`: sides on a multiple of 32, within `MIN_SIDE`…`MAX_SIDE`). The mask is scaled to that frame with nearest-neighbour. The PNG is restored to the photo's size (`PhotoFrame.restore`).
-
-| Field | Required | Rule |
-|---|---|---|
-| `prompt` | yes | Same as `prompt` on generate: English, up to 2000 characters |
-| `negative_prompt` | no | Same as on generate. An empty field stays an empty string for the archive |
-| `image` | yes | Exactly one main photo. JPEG, PNG, WEBP, BMP. The field name is `image`, not `images` |
-| `mask` | yes | Exactly one file. The page sends a PNG. The decoder accepts JPEG, PNG, WEBP, and BMP. Pixel width and height must match the main photo. White is the area to fill. An all-black mask is `400`. A size mismatch is `400` |
-| `images` | no | Repeated file field, in the order sent. Same formats as generate. At most `MAX_IMAGES - 2` (8 when the cap is 10), because the photo and the mask already use two condition slots. The long side is shrunk to `INPUT_MAX_SIDE` (1536) |
-| `steps` | no | Same as on generate |
-| `true_cfg_scale` | no | Same as on generate |
-| `seed` | no | Same as on generate |
-
-The pipeline receives `images` in this order: the fitted main photo (RGB), the fitted mask (RGB), then the reference photos. The prompt is sent as written.
-
-Identity headers are `X-Auth-User-Id` and `X-Auth-Email`, with the same rules as `POST /api/generate`. `GET /mask-fill` does not read them.
-
-Success is `200` and the generation JSON shape: `seed`, `duration`, `width`, `height`, `images` (local PNG URLs), and either `saved` plus `storage_id` or `saved: false` plus `storage_error`.
-
-A UUID `X-Auth-User-Id` saves the run and returns `saved: true` with `storage_id`. Without a UUID, WebStorage is not called and `storage_error` is `not saved: no user id`. If the UUID was valid and the archive failed, the status stays `200`, the PNG is still returned, `saved` is `false`, and `storage_error` is the Storage error text. `400`, `413`, and `503` do not call WebStorage.
-
-The archive `images`, in this order, are the main photo, the mask, then the reference photos, re-encoded as PNG. `width` and `height` in that call are the uploaded photo's size, the same numbers as the JSON.
-
-## `GET /outputs/<name>`
-
-Returns a PNG (`image/png`) from `OUTPUT_DIR`. The name must not leave the directory: `../` and an encoded escape return 400 (`ValidationError`) or 404, and a file outside the directory is not served. The directory keeps the latest `KEEP_OUTPUTS` files (default 200).
-
-Missing file:
+`GET /api/tasks/:id` and `GET /api/feed` return:
 
 ```json
-{"error": "Файл не найден"}
+{
+  "id": "...",
+  "status": "queued",
+  "progress": {"stage": 0, "total": 10, "name": "queued"},
+  "mode": "customize",
+  "provider_kind": "qwen",
+  "model": "qwen-image-2.1",
+  "seed": 7,
+  "prompt": "...",
+  "error": null,
+  "result_url": null,
+  "shape_id": "...",
+  "project_id": "...",
+  "project_name": "...",
+  "created_at": "2026-10-23T15:04:00Z"
+}
 ```
 
-status 404.
+`provider_kind` is `qwen`, `wan`, or `higgsfield`. Local jobs include `progress`. External jobs send `progress: null` and the UI shows the status word. Status `invalidated` means the project or the object was deleted before the result could be kept. Other statuses the UI understands are `queued`, `running`, `done`, and `failed`.
 
-## `GET /static/<path:filename>`
+`POST /api/renders` with `{scope: "project"|"shape", project_id, shape_id}` returns `{url}`. The composite pastes selected **generated** variants onto the original photo. A circle is a hard alpha mask after the model returns. A scratch render returns the selected generated variant, or the latest one.
 
-Ordinary Flask static files: `style.css`, `app.js`, `customize.js`, `mask_fill.js`, `mask_fill.css`.
+`GET /api/media/<key>` serves a PNG. The key must start with the caller's user id.
 
-## Errors
+## Internal inference
 
-| Status | When | Body |
-|---|---|---|
-| 400 | `ValidationError`: empty prompt, Cyrillic, length, steps, CFG, size, format or file count, path escape, a mask that does not match the photo, or an all-black mask | `{"error": "…"}` |
-| 413 | Body larger than `MAX_UPLOAD_MB` | `{"error": "Суммарный размер загрузки больше 60 МБ"}` |
-| 503 | `PipelineError` (load, config, OOM inside the generator) | `{"error": "<PipelineError text>"}` |
-| 404 | No file at `/outputs/<name>` | `{"error": "Файл не найден"}` |
-| 404 | Unknown path | Werkzeug response, not the application's JSON envelope |
-| 405 | Right path, wrong method (`GET /api/generate`, `POST /healthz`) | Werkzeug response, not a JSON envelope |
-| 500 | Any other exception | `{"error": "Внутренняя ошибка: ValueError"}` — the class name, without the exception text |
-
-The shared handler does not replace `HTTPException`, so an unknown-path 404 and a 405 stay Flask's own responses.
-
-## Outbound WebStorage call
-
-Only after a successful `POST /api/generate` or `POST /api/mask-fill` and a written PNG, and only when `X-Auth-User-Id` is a UUID.
-
-```http
-POST {WEBSTORAGE_URL}/api/generated
-X-Auth-User-Id: <uuid>
-X-Auth-Email: <if it was non-empty>
-Content-Type: multipart/form-data
-```
-
-Default `WEBSTORAGE_URL=http://app:8000`, timeout `WEBSTORAGE_TIMEOUT=60` seconds. `Cookie`, `Authorization`, and `X-Auth-Role` are not sent.
-
-Parts, in this order:
-
-| Part | Contents |
-|---|---|
-| `prompt` | Stripped prompt |
-| `negative_prompt` | Stripped user field, an empty string if it was omitted |
-| `seed` | The seed actually used |
-| `steps` | |
-| `true_cfg_scale` | Number without trailing zeros |
-| `width`, `height` | On generate, the frame passed to the pipeline. On mask fill, the uploaded photo's width and height |
-| `duration` | Seconds with one decimal place (`1.26` → `"1.3"`) |
-| `images` | PNG files, names `image-1.png`, `image-2.png`, …. On generate, the reference photos. On mask fill, the main photo, the mask, then the reference photos, in that order |
-| `result` | The first saved PNG, file name as in `images[0].name` |
-
-The expected status is **201** and a JSON object with a non-empty string `id`. `created_at` is not read. Any other outcome becomes `saved: false` and does not change the generation HTTP status.
+Unchanged, and not exposed to the gateway: `POST http://qwen-inference:8010/v1/generate` → `text/event-stream`. See [inference_api.md](inference_api.md) and [change request 0001](change-requests/0001-inference-progress-events.md).

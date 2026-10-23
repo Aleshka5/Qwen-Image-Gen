@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light" />
+    <title>Workspace · Image · Filenkov</title>
+    <style>
+      :root { --header-h: 4.5rem; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        display: flex;
+        flex-direction: column;
+        min-height: 100%;
+        background: #f4efe6;
+        color: #1a1612;
+        font-family: "Public Sans", "Segoe UI", sans-serif;
+      }
+      .dev-shell-header {
+        flex: none;
+        height: var(--header-h);
+        display: flex;
+        align-items: center;
+        padding: 0 1.5rem;
+        border-bottom: 1px solid #d9d1c3;
+        background: #f4efe6;
+        font-family: Fraunces, Georgia, serif;
+        font-size: 1.25rem;
+      }
+      #root.workspace { flex: 1; min-height: 0; }
+    </style>
+  </head>
+  <body>
+    <header class="dev-shell-header">Filenkov</header>
+    <main id="root" class="workspace"></main>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

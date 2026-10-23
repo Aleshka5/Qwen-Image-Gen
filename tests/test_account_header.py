@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-_PAGES = ("/", "/customize", "/mask-fill")
+_PAGES = ("/",)
 
 
 def _page(client, path: str, headers: dict[str, str] | None = None) -> str:

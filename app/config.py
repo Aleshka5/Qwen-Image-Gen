@@ -67,7 +67,7 @@ class Settings:
 
     # --- входные изображения --------------------------------------------
     max_images: int = _int("MAX_IMAGES", 10)
-    max_upload_mb: int = _int("MAX_UPLOAD_MB", 60)
+    max_upload_mb: int = _int("MAX_UPLOAD_MB", 512)
     input_max_side: int = _int("INPUT_MAX_SIDE", 1536)
 
     # --- сервис ----------------------------------------------------------
@@ -79,6 +79,20 @@ class Settings:
     # Куда POST /api/generate складывает удачный прогон. Таймаут только на этот вызов.
     webstorage_url: str = os.getenv("WEBSTORAGE_URL", "http://app:8000").rstrip("/")
     webstorage_timeout: float = _float("WEBSTORAGE_TIMEOUT", 60)
+
+    # Shared backends. All empty -> in-memory runtime for tests and local UI.
+    # Production sets every one of them; a partial set is refused at startup.
+    mongo_url: str = os.getenv("MONGO_URL", "")
+    mongo_db: str = os.getenv("MONGO_DB", "qimg")
+    rabbit_url: str = os.getenv("RABBIT_URL", "")
+    minio_endpoint: str = os.getenv("MINIO_ENDPOINT", "")
+    minio_access_key: str = os.getenv("MINIO_ACCESS_KEY", "")
+    minio_secret_key: str = os.getenv("MINIO_SECRET_KEY", "")
+    minio_bucket: str = os.getenv("MINIO_BUCKET", "qimg-images")
+    minio_secure: bool = _bool("MINIO_SECURE", False)
+    settings_secret: str = os.getenv("SETTINGS_SECRET", "")
+    max_shapes: int = _int("MAX_SHAPES", 20)
+    max_copies: int = _int("MAX_COPIES", 8)
 
     @property
     def max_content_length(self) -> int:

@@ -1,6 +1,6 @@
 # Change Request: Mask-fill form
 
-> **Status:** Implemented
+> **Status:** Superseded by [user-story-project-workspace.md](user-story-project-workspace.md). The `/mask-fill` page and `POST /api/mask-fill` are gone. Mask fill is a mode inside the workspace.
 > **Repos:** qwen-image-service (this document).
 > **Caller of this service:** the browser, through the Auth Gateway at `https://image.filenkov.store`.
 > **This service calls:** the already loaded `QwenImage21Pipeline`, then WebStorage `POST {WEBSTORAGE_URL}/api/generated` the same way `POST /api/generate` does.

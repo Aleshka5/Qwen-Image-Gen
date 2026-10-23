@@ -1,28 +1,19 @@
-# Веб-морда Qwen-Image 2.1: Flask, страницы, JSON API, WebStorage и HTTP-клиент
-# пайплайна. Ни torch, ни CUDA, ни весов — 212 MB образа (Dockerfile.web) вместо 6.2 GB.
+# Qwen image workspace: the web face plus two workers. No weights and no GPU.
 #
-# МОДЕЛЬ — ОТДЕЛЬНЫЙ ПРОЕКТ И ОТДЕЛЬНАЯ СЕТЬ
-#   Пайплайн (torch, 33 GiB весов, карта) живёт в контейнере qwen-inference, и
-#   запускается он не отсюда:
-#     ../../Common/models/services/inference/    — compose + run.sh этого контейнера
-#     Switch-Service: `state image gpu`          — на master-node (карта под admission)
-#   Его сеть — models_network, и только она. Здесь описана одна веб-морда.
+# The model is a different project. qwen-inference (torch, the 33 GB weights, :8010)
+# is started from Common/models/services/inference, or by Switch-Service as
+# `state image gpu`. This file never starts it and never publishes a host port.
 #
-# Сети этой морды:
-#   deploy_auth_network  домашняя: сюда приходит Auth Gateway (http://qwen-image:8000)
-#                        и здесь WebStorage отвечает как http://app:8000
-#   models_network       клиентская: единственная причина — резолв имени
-#                        qwen-inference. Модель про auth-сеть не знает ничего
+#   qwen-image        Flask + the built workspace UI. Gateway upstream http://qwen-image:8000.
+#   qimg-processor    intake queue -> gen queue. Reads Mongo, does not call the model.
+#   qimg-orchestrator claims a task, calls qwen-inference or an external provider,
+#                     writes the result to Mongo and MinIO.
 #
-# Связь между контейнерами — одна HTTP-ручка:
-# POST http://qwen-inference:8010/v1/generate (multipart) -> text/event-stream.
-# Браузер и Auth Gateway по-прежнему видят только http://qwen-image:8000:
-# протокол страницы не изменился, /api/logs отдаёт те же строки пайплайна.
-#
-# Порты на хост не публикуются: снаружи сервис доступен только Auth Gateway.
-# Порядок запуска — сначала модель (ей нужна карта), потом эта морда; `depends_on`
-# между проектами нет. Морда терпит отсутствие пайплайна: /healthz отдаёт
-# `inference unreachable`, каждая генерация отвечает 503, пока он не поднялся.
+# Networks, all external (this file does not create them):
+#   deploy_auth_network   gateway -> qwen-image
+#   models_network        name qwen-inference (web and orchestrator only)
+#   common_network        mongo, minio, rabbit. Without this network those names do not resolve.
+#                         Hostname redis on the auth network is rejected_cache; do not use it.
 
 services:
   qwen-image:
@@ -39,15 +30,56 @@ services:
     networks:
       - deploy_auth_network
       - models_network
+      - common_network
     environment:
-      # Единственная связь с моделью — этот адрес. Ключ дублирует .env намеренно:
-      # связь должна быть видна в файле запуска, а не только в env-файле.
       INFERENCE_URL: http://qwen-inference:8010
+      MONGO_DB: qimg
+      MINIO_ENDPOINT: minio:9000
+      MINIO_BUCKET: qimg-images
+      MINIO_SECURE: "false"
+
+  qimg-processor:
+    image: localhost/qwen-image-service:latest
+    container_name: qimg-processor
+    env_file: .env
+    restart: always
+    mem_limit: 2g
+    command: ["python", "-m", "qimg.processor"]
+    healthcheck:
+      disable: true
+    networks:
+      - common_network
+    environment:
+      MONGO_DB: qimg
+      MINIO_ENDPOINT: minio:9000
+      MINIO_BUCKET: qimg-images
+      MINIO_SECURE: "false"
+
+  qimg-orchestrator:
+    image: localhost/qwen-image-service:latest
+    container_name: qimg-orchestrator
+    env_file: .env
+    restart: always
+    mem_limit: 2g
+    command: ["python", "-m", "qimg.orchestrator"]
+    healthcheck:
+      disable: true
+    networks:
+      - common_network
+      - models_network
+    environment:
+      INFERENCE_URL: http://qwen-inference:8010
+      MONGO_DB: qimg
+      MINIO_ENDPOINT: minio:9000
+      MINIO_BUCKET: qimg-images
+      MINIO_SECURE: "false"
 
 networks:
   deploy_auth_network:
     external: true
   models_network:
+    external: true
+  common_network:
     external: true
 
 volumes:
