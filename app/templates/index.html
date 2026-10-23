@@ -5,16 +5,26 @@
   <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="light">
-  <title>Generate · Image · Filenkov</title>
-  <meta name="description" content="Generate an image from an English prompt and optional reference photos.">
+  <title>Workspace · Image · Filenkov</title>
   <link rel="preload" as="font" type="font/woff2" href="{{ url_for('static', filename='fonts/fraunces-latin.woff2') }}" crossorigin>
   <link rel="preload" as="font" type="font/woff2" href="{{ url_for('static', filename='fonts/public-sans-latin.woff2') }}" crossorigin>
   <link rel="stylesheet" href="{{ url_for('static', filename='filenkov.css') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  {% for href in styles %}
+  <link rel="stylesheet" href="{{ href }}">
+  {% endfor %}
+  <style>
+    .main.workspace {
+      padding: 0;
+      height: calc(100svh - var(--header-h));
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+  </style>
 </head>
-<body data-max-images="{{ max_images }}">
+<body>
 <div class="shell">
-  <a class="skip-link" href="#main">Skip to content</a>
+  <a class="skip-link" href="#root">Skip to content</a>
   <header class="header">
     <a class="brand" href="https://filenkov.store">
       <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
@@ -29,124 +39,10 @@
     </nav>
     {% include "_account.html" %}
   </header>
-  <main class="main" id="main">
-    <div class="page-head">
-      <div>
-        <p class="kicker">Image</p>
-        <h1>Generate</h1>
-      </div>
-    </div>
-    <p class="muted page-lead">Use an English prompt and up to {{ max_images }} reference photos with model {{ model_id }}.</p>
-    <nav class="pages" aria-label="Screens">
-      <a href="{{ url_for('web.index') }}" aria-current="page">Generate</a>
-      <a href="{{ url_for('web.customize') }}">Customize</a>
-      <a href="{{ url_for('web.mask_fill') }}">Mask fill</a>
-    </nav>
-
-    <form id="form" class="tool">
-      <div class="field">
-        <label for="prompt">Prompt (English)</label>
-        <textarea id="prompt" name="prompt" rows="4" required
-                  placeholder="A cinematic portrait of the person, soft rim light, 85mm lens"></textarea>
-      </div>
-
-      <div class="field">
-        <label for="negative_prompt">Negative prompt (English, optional)</label>
-        <input id="negative_prompt" type="text" name="negative_prompt" placeholder="blurry, extra fingers, watermark">
-      </div>
-
-      <div class="field">
-        <label for="images">Reference photos (up to {{ max_images }})</label>
-        <input type="file" id="images" name="images" accept="image/*" multiple>
-        <p class="muted">Reorder with the arrows or by dragging. These are image 1, image 2, and the rest in the prompt.</p>
-        <div id="previews" class="previews"></div>
-      </div>
-
-      <fieldset class="size">
-        <legend>Size</legend>
-        <div class="choice-row">
-          <label class="size-choice">
-            <input type="radio" name="size_mode" value="preset" checked>
-            Quality and aspect
-          </label>
-          <label class="size-choice">
-            <input type="radio" name="size_mode" value="custom">
-            Custom size
-          </label>
-        </div>
-
-        <div id="size-preset">
-          <div class="grid">
-            <div class="field">
-              <label for="quality">Quality</label>
-              <select name="quality" id="quality">
-                <option value="high" selected>High (~2K)</option>
-                <option value="medium">Medium (~1K)</option>
-              </select>
-            </div>
-            <div class="field">
-              <label for="aspect">Aspect ratio</label>
-              <select name="aspect" id="aspect">
-                {% for ratio in aspects %}
-                  <option value="{{ ratio.key }}"
-                          data-high="{{ ratio.width }}×{{ ratio.height }}"
-                          data-medium="{{ ratio.width // 2 }}×{{ ratio.height // 2 }}">{{ ratio.key }}</option>
-                {% endfor %}
-              </select>
-            </div>
-          </div>
-          <p id="size-preview" class="muted">2048×2048</p>
-        </div>
-
-        <div id="size-custom" class="grid" hidden>
-          <div class="field">
-            <label for="height">Height</label>
-            <input id="height" type="number" name="height" min="{{ gen_min_side }}" max="{{ gen_max_side }}" step="32" value="1024" inputmode="numeric">
-          </div>
-          <div class="field">
-            <label for="width">Width</label>
-            <input id="width" type="number" name="width" min="{{ gen_min_side }}" max="{{ gen_max_side }}" step="32" value="1024" inputmode="numeric">
-          </div>
-          <p class="muted size-note">From {{ gen_min_side }} to {{ gen_max_side }} px. Each side rounds down to a multiple of 32.</p>
-        </div>
-      </fieldset>
-
-      <div class="grid">
-        <div class="field">
-          <label for="steps">Steps</label>
-          <input id="steps" type="number" name="steps" value="{{ default_steps }}" min="1" max="{{ max_steps }}">
-        </div>
-
-        <div class="field">
-          <label for="true_cfg_scale">CFG (1 is no guidance)</label>
-          <input id="true_cfg_scale" type="number" name="true_cfg_scale" value="{{ default_cfg }}" min="1" max="10" step="0.1">
-        </div>
-
-        <div class="field">
-          <label for="seed">Seed (-1 is random)</label>
-          <input id="seed" type="number" name="seed" value="-1" min="-1">
-        </div>
-      </div>
-
-      <button id="submit" class="btn" type="submit">Generate</button>
-      <p id="status" class="status" hidden></p>
-      <pre id="logs" class="logs" hidden></pre>
-    </form>
-
-    <section id="result" class="tool" hidden>
-      <h2>Result</h2>
-      <p id="meta" class="muted"></p>
-      <div id="gallery" class="gallery"></div>
-      <p id="storage-error" class="status error" hidden></p>
-    </section>
-  </main>
-  <footer class="footer">
-    <span>Filenkov · Image</span>
-    <span>Google sign-in on filenkov.store</span>
-  </footer>
+  <main id="root" class="main workspace"></main>
 </div>
-<p class="sr-only" aria-live="polite"></p>
-<script src="{{ url_for('static', filename='header.js') }}" defer></script>
-<script src="{{ url_for('static', filename='app.js') }}" defer></script>
+{% for src in scripts %}
+<script type="module" src="{{ src }}"></script>
+{% endfor %}
 </body>
 </html>

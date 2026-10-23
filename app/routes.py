@@ -1,426 +1,275 @@
-"""HTTP-слой: веб-форма и JSON API."""
+"""HTTP boundary. The gateway already decided who may call. We only read the id it injected."""
 
 from __future__ import annotations
 
-import io
-import logging
-import random
+import json
 import re
-import secrets
+from pathlib import Path
 
-from flask import Blueprint, jsonify, render_template, request, send_file, url_for
+from flask import Blueprint, current_app, jsonify, render_template, request, send_file
+from io import BytesIO
 
-from .config import settings
-from .generator import GenerationRequest, PipelineError, generator
-from .logbuf import live_logs
-from .webstorage import StorageError, save_generated
-from .imaging import (
-    ASPECT_RATIOS,
-    GEN_MAX_SIDE,
-    GEN_MIN_SIDE,
-    RESOLUTION_PRESETS,
-    ValidationError,
-    load_uploads,
-    output_path,
-    parse_custom_size,
-    parse_resolution,
-    prepare_photo,
-    save_outputs,
-    size_from_quality,
-)
-from .maskfill import prepare_mask_fill
-
-log = logging.getLogger(__name__)
+from qimg.errors import AppError
+from qimg.service import Service
 
 bp = Blueprint("web", __name__)
 
-_CYRILLIC = re.compile(r"[Ѐ-ӿ]")
-_MAX_PROMPT_CHARS = 2000
-_SEED_MAX = 2**31 - 1
 _USER_ID = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 )
-_NOT_SAVED_NO_USER = "not saved: no user id"
 _ACCOUNT_NAME = re.compile(r"[\x00-\x1f\x7f]")
-_ACCOUNT_NAME_MAX = 80
+_UI = Path(__file__).resolve().parent / "static" / "ui" / ".vite" / "manifest.json"
 
 
-def _clean_prompt(raw: str | None, *, field: str, required: bool) -> str:
-    prompt = (raw or "").strip()
-    if not prompt:
-        if required:
-            raise ValidationError(f"Поле «{field}» не может быть пустым")
-        return ""
-    if len(prompt) > _MAX_PROMPT_CHARS:
-        raise ValidationError(f"Поле «{field}»: не больше {_MAX_PROMPT_CHARS} символов")
-    if _CYRILLIC.search(prompt):
-        raise ValidationError(f"Поле «{field}» должно быть на английском языке")
-    return prompt
-
-
-def _parse_int(raw: str | None, *, field: str, default: int, low: int, high: int) -> int:
-    raw = (raw or "").strip()
-    if not raw:
-        return default
-    try:
-        value = int(raw)
-    except ValueError as exc:
-        raise ValidationError(f"Поле «{field}»: ожидается целое число") from exc
-    if not low <= value <= high:
-        raise ValidationError(f"Поле «{field}»: допустим диапазон {low}–{high}")
-    return value
-
-
-def _parse_seed(raw: str | None) -> int:
-    raw = (raw or "").strip()
-    if not raw or raw == "-1":
-        return secrets.randbelow(_SEED_MAX)
-    return _parse_int(raw, field="seed", default=0, low=0, high=_SEED_MAX)
-
-
-def _valid_user_id(raw: str | None) -> str | None:
-    value = (raw or "").strip()
-    if _USER_ID.fullmatch(value):
-        return value
-    return None
-
-
-def _optional_text(raw: str | None) -> str | None:
-    value = (raw or "").strip()
-    return value or None
-
-
-def _png_bytes(image) -> bytes:
-    buf = io.BytesIO()
-    image.save(buf, format="PNG")
-    return buf.getvalue()
-
-
-def _generation_size(form) -> tuple[int, int]:
-    """Пресет (качество + соотношение), свои H/W, либо старое поле resolution."""
-    mode = (form.get("size_mode") or "").strip().lower()
-    if mode == "custom":
-        return parse_custom_size(form.get("width"), form.get("height"))
-    if mode == "preset":
-        return size_from_quality(form.get("quality"), form.get("aspect"))
-    return parse_resolution(form.get("resolution"))
-
-
-def _parse_cfg(raw: str | None) -> float:
-    raw = (raw or "").strip()
-    if not raw:
-        return settings.default_true_cfg_scale
-    try:
-        value = float(raw)
-    except ValueError as exc:
-        raise ValidationError("Поле «CFG»: ожидается число") from exc
-    if not 1.0 <= value <= 10.0:
-        raise ValidationError("Поле «CFG»: допустим диапазон 1.0–10.0")
-    return value
+def _caller() -> tuple[str | None, str | None]:
+    """Identity the gateway stamped on the request. Not a credential check."""
+    raw = (request.headers.get("X-Auth-User-Id") or "").strip()
+    user = raw if _USER_ID.fullmatch(raw) else None
+    email = (request.headers.get("X-Auth-Email") or "").strip() or None
+    return user, email
 
 
 def _account_name() -> str | None:
-    """Username the gateway put on the request. Display only. Not a credential."""
     raw = request.headers.get("X-Auth-Name")
     if not raw or _ACCOUNT_NAME.search(raw):
         return None
     name = " ".join(raw.split())
-    if not name:
-        return None
-    return name[:_ACCOUNT_NAME_MAX]
+    return name[:80] or None
 
 
-def _render_page(template: str, **context: object) -> str:
-    return render_template(template, account_name=_account_name(), **context)
+def _user() -> tuple[str, str | None]:
+    user, email = _caller()
+    if not user:
+        raise AppError("A user id is required")
+    return user, email
+
+
+def _svc() -> Service:
+    return Service(current_app.extensions["qimg"])
+
+
+def _ui_assets() -> tuple[list[str], list[str]]:
+    if not _UI.exists():
+        return [], []
+    entry = json.loads(_UI.read_text(encoding="utf-8")).get("index.html") or {}
+    scripts = [f"/static/ui/{entry['file']}"] if entry.get("file") else []
+    styles = [f"/static/ui/{name}" for name in entry.get("css") or []]
+    return scripts, styles
 
 
 @bp.get("/")
-def index() -> str:
-    return _render_page(
+def index():
+    scripts, styles = _ui_assets()
+    return render_template(
         "index.html",
-        aspects=ASPECT_RATIOS,
-        gen_min_side=GEN_MIN_SIDE,
-        gen_max_side=GEN_MAX_SIDE,
-        max_images=settings.max_images,
-        default_steps=settings.default_steps,
-        max_steps=settings.max_steps,
-        default_cfg=settings.default_true_cfg_scale,
-        model_id=settings.model_id,
-    )
-
-
-@bp.get("/customize")
-def customize() -> str:
-    return _render_page(
-        "customize.html",
-        default_steps=settings.default_steps,
-        max_steps=settings.max_steps,
-        default_cfg=settings.default_true_cfg_scale,
-        model_id=settings.model_id,
-    )
-
-
-@bp.get("/mask-fill")
-def mask_fill() -> str:
-    return _render_page(
-        "mask_fill.html",
-        max_images=settings.max_images,
-        default_steps=settings.default_steps,
-        max_steps=settings.max_steps,
-        default_cfg=settings.default_true_cfg_scale,
-        model_id=settings.model_id,
+        account_name=_account_name(),
+        scripts=scripts,
+        styles=styles,
     )
 
 
 @bp.get("/healthz")
 def healthz():
+    from app.config import settings
+    from app.inference import InferenceClient
+
+    client = InferenceClient()
+    snapshot = client._snapshot()
     return jsonify(
         status="ok",
         model=settings.model_id,
-        memory_mode=getattr(generator, "memory_mode", None) or settings.memory_mode,
-        loaded=generator.is_loaded,
-        load_error=generator.load_error,
+        memory_mode=snapshot.get("memory_mode") or settings.memory_mode,
+        loaded=bool(snapshot.get("loaded")),
+        load_error=snapshot.get("load_error"),
         inference=settings.inference_url,
     )
 
 
 @bp.get("/api/config")
 def api_config():
-    return jsonify(
-        model=settings.model_id,
-        max_images=settings.max_images,
-        max_upload_mb=settings.max_upload_mb,
-        max_steps=settings.max_steps,
-        accepts_images=generator.accepts_images,
-        presets=[
-            {"key": p.key, "label": p.label, "width": p.width, "height": p.height}
-            for p in RESOLUTION_PRESETS
-        ],
+    return jsonify(_svc().config())
+
+
+@bp.get("/api/catalog")
+def api_catalog():
+    return jsonify(_svc().catalog())
+
+
+@bp.get("/api/settings")
+def api_settings():
+    user, _email = _user()
+    return jsonify(_svc().get_settings(user))
+
+
+@bp.post("/api/settings/providers")
+def api_create_provider():
+    user, _email = _user()
+    return jsonify(_svc().create_provider(user, request.get_json(silent=True) or {}))
+
+
+@bp.patch("/api/settings/providers/<provider_id>")
+def api_update_provider(provider_id: str):
+    user, _email = _user()
+    return jsonify(_svc().update_provider(user, provider_id, request.get_json(silent=True) or {}))
+
+
+@bp.delete("/api/settings/providers/<provider_id>")
+def api_delete_provider(provider_id: str):
+    user, _email = _user()
+    return jsonify(_svc().delete_provider(user, provider_id))
+
+
+@bp.post("/api/settings/providers/<provider_id>/default")
+def api_default_provider(provider_id: str):
+    user, _email = _user()
+    return jsonify(_svc().make_default(user, provider_id))
+
+
+@bp.get("/api/projects")
+def api_projects():
+    user, _email = _user()
+    return jsonify(_svc().list_projects(user))
+
+
+@bp.post("/api/projects")
+def api_create_project():
+    user, _email = _user()
+    project = _svc().create_project(
+        user,
+        (request.form.get("kind") or "").strip(),
+        request.files.get("file"),
+        request.form.get("name"),
     )
+    return jsonify(project)
 
 
-@bp.get("/api/logs")
-def api_logs():
-    raw = (request.args.get("after") or "0").strip()
-    try:
-        after = int(raw)
-    except ValueError:
-        after = 0
-    if after < 0:
-        after = 0
-    return jsonify(lines=live_logs().since(after))
+@bp.get("/api/projects/<project_id>")
+def api_project(project_id: str):
+    user, _email = _user()
+    return jsonify(_svc().get_project(user, project_id))
 
 
-@bp.post("/api/generate")
-def api_generate():
-    form = request.form
-    prompt = _clean_prompt(form.get("prompt"), field="prompt", required=True)
-    negative = _clean_prompt(form.get("negative_prompt"), field="negative prompt", required=False)
-    width, height = _generation_size(form)
-    steps = _parse_int(
-        form.get("steps"), field="steps", default=settings.default_steps, low=1, high=settings.max_steps
-    )
-    cfg = _parse_cfg(form.get("true_cfg_scale"))
-    seed = _parse_seed(form.get("seed"))
-    images = load_uploads(request.files.getlist("images"))
-
-    log.info(
-        "Генерация: %dx%d, steps=%d, cfg=%.1f, seed=%d, входных фото=%d",
-        width, height, steps, cfg, seed, len(images),
-    )
-
-    result = generator.generate(
-        GenerationRequest(
-            prompt=prompt,
-            negative_prompt=negative or settings.default_negative_prompt,
-            width=width,
-            height=height,
-            steps=steps,
-            true_cfg_scale=cfg,
-            seed=seed,
-            images=images,
-        )
-    )
-
-    names = save_outputs(result.images)
-    # Идентификатор читается только здесь. Любое другое значение — «нет пользователя».
-    user_id = _valid_user_id(request.headers.get("X-Auth-User-Id"))
-    if user_id is None:
-        stored = {"saved": False, "storage_error": _NOT_SAVED_NO_USER}
-    else:
-        try:
-            storage_id = save_generated(
-                user_id=user_id,
-                email=_optional_text(request.headers.get("X-Auth-Email")),
-                prompt=prompt,
-                negative_prompt=negative,
-                seed=result.seed,
-                steps=steps,
-                true_cfg_scale=cfg,
-                width=width,
-                height=height,
-                duration=result.duration,
-                images=[_png_bytes(image) for image in images],
-                result_png=output_path(names[0]).read_bytes(),
-                result_name=names[0],
-            )
-        except StorageError as exc:
-            stored = {"saved": False, "storage_error": exc.reason}
-        else:
-            stored = {"saved": True, "storage_id": storage_id}
-    return jsonify(
-        seed=result.seed,
-        duration=round(result.duration, 2),
-        width=width,
-        height=height,
-        images=[{"name": n, "url": url_for("web.output", name=n)} for n in names],
-        **stored,
-    )
+@bp.patch("/api/projects/<project_id>")
+def api_rename_project(project_id: str):
+    user, _email = _user()
+    body = request.get_json(silent=True) or {}
+    return jsonify(_svc().rename_project(user, project_id, body.get("name") or ""))
 
 
-@bp.post("/api/customize")
-def api_customize():
-    form = request.form
-    prompt = _clean_prompt(form.get("system_prompt"), field="system prompt", required=True)
-    negative = _clean_prompt(form.get("negative_prompt"), field="negative prompt", required=False)
-    frame = prepare_photo(request.files.getlist("image"))
-    steps = _parse_int(
-        form.get("steps"), field="steps", default=settings.default_steps, low=1, high=settings.max_steps
-    )
-    cfg = _parse_cfg(form.get("true_cfg_scale"))
-    seed = _parse_seed(form.get("seed"))
-
-    log.info(
-        "Кастомизация: фото %dx%d, модель %dx%d, steps=%d, cfg=%.1f, seed=%d",
-        frame.width,
-        frame.height,
-        frame.model_width,
-        frame.model_height,
-        steps,
-        cfg,
-        seed,
-    )
-
-    result = generator.generate(
-        GenerationRequest(
-            prompt=prompt,
-            negative_prompt=negative or settings.default_negative_prompt,
-            width=frame.model_width,
-            height=frame.model_height,
-            steps=steps,
-            true_cfg_scale=cfg,
-            seed=seed,
-            images=[frame.image],
-        )
-    )
-
-    restored = [frame.restore(image) for image in result.images]
-    names = save_outputs(restored)
-    return jsonify(
-        seed=result.seed,
-        duration=round(result.duration, 2),
-        width=frame.width,
-        height=frame.height,
-        images=[{"name": n, "url": url_for("web.output", name=n)} for n in names],
-    )
+@bp.delete("/api/projects/<project_id>")
+def api_delete_project(project_id: str):
+    user, _email = _user()
+    return jsonify(_svc().delete_project(user, project_id))
 
 
-@bp.post("/api/mask-fill")
-def api_mask_fill():
-    form = request.form
-    prompt = _clean_prompt(form.get("prompt"), field="prompt", required=True)
-    negative = _clean_prompt(form.get("negative_prompt"), field="negative prompt", required=False)
-    steps = _parse_int(
-        form.get("steps"), field="steps", default=settings.default_steps, low=1, high=settings.max_steps
-    )
-    cfg = _parse_cfg(form.get("true_cfg_scale"))
-    seed = _parse_seed(form.get("seed"))
-    frame = prepare_mask_fill(
-        request.files.getlist("image"),
-        request.files.getlist("mask"),
+@bp.get("/api/projects/<project_id>/preview")
+def api_project_preview(project_id: str):
+    user, _email = _user()
+    data, mime = _svc().project_preview(user, project_id)
+    return send_file(BytesIO(data), mimetype=mime)
+
+
+@bp.post("/api/projects/<project_id>/shapes")
+def api_create_shape(project_id: str):
+    user, _email = _user()
+    return jsonify(_svc().create_shape(user, project_id, request.get_json(silent=True) or {}))
+
+
+@bp.post("/api/projects/<project_id>/commit")
+def api_commit(project_id: str):
+    user, _email = _user()
+    body = request.get_json(silent=True) or {}
+    return jsonify(_svc().commit(user, project_id, body.get("parent_id")))
+
+
+@bp.get("/api/projects/<project_id>/variants")
+def api_project_variants(project_id: str):
+    user, _email = _user()
+    return jsonify(_svc().project_variants(user, project_id))
+
+
+@bp.post("/api/projects/<project_id>/select")
+def api_select_project(project_id: str):
+    user, _email = _user()
+    body = request.get_json(silent=True) or {}
+    return jsonify(_svc().select_project_variant(user, project_id, body.get("variant_id") or ""))
+
+
+@bp.patch("/api/shapes/<shape_id>")
+def api_update_shape(shape_id: str):
+    user, _email = _user()
+    return jsonify(_svc().update_shape(user, shape_id, request.get_json(silent=True) or {}))
+
+
+@bp.delete("/api/shapes/<shape_id>")
+def api_delete_shape(shape_id: str):
+    user, _email = _user()
+    return jsonify(_svc().delete_shape(user, shape_id))
+
+
+@bp.post("/api/shapes/<shape_id>/type")
+def api_shape_type(shape_id: str):
+    user, _email = _user()
+    body = request.get_json(silent=True) or {}
+    return jsonify(_svc().set_type(user, shape_id, body.get("type") or ""))
+
+
+@bp.get("/api/shapes/<shape_id>/source")
+def api_shape_source(shape_id: str):
+    user, _email = _user()
+    data, mime = _svc().shape_source(user, shape_id, as_preview=request.args.get("preview") == "1")
+    return send_file(BytesIO(data), mimetype=mime)
+
+
+@bp.get("/api/shapes/<shape_id>/variants")
+def api_shape_variants(shape_id: str):
+    user, _email = _user()
+    return jsonify(_svc().shape_variants(user, shape_id))
+
+
+@bp.post("/api/shapes/<shape_id>/select")
+def api_select_shape(shape_id: str):
+    user, _email = _user()
+    body = request.get_json(silent=True) or {}
+    return jsonify(_svc().select_shape_variant(user, shape_id, body.get("variant_id") or ""))
+
+
+@bp.post("/api/generations")
+def api_generations():
+    user, email = _user()
+    payload = _svc().submit(
+        user,
+        request.form,
+        request.files.get("mask"),
         request.files.getlist("images"),
     )
-
-    log.info(
-        "Заливка: фото %dx%d, модель %dx%d, steps=%d, cfg=%.1f, seed=%d, условий=%d",
-        frame.width,
-        frame.height,
-        frame.model_width,
-        frame.model_height,
-        steps,
-        cfg,
-        seed,
-        len(frame.images),
-    )
-
-    result = generator.generate(
-        GenerationRequest(
-            prompt=prompt,
-            negative_prompt=negative or settings.default_negative_prompt,
-            width=frame.model_width,
-            height=frame.model_height,
-            steps=steps,
-            true_cfg_scale=cfg,
-            seed=seed,
-            images=list(frame.images),
-        )
-    )
-
-    restored = [frame.restore(image) for image in result.images]
-    names = save_outputs(restored)
-    user_id = _valid_user_id(request.headers.get("X-Auth-User-Id"))
-    if user_id is None:
-        stored = {"saved": False, "storage_error": _NOT_SAVED_NO_USER}
-    else:
-        try:
-            storage_id = save_generated(
-                user_id=user_id,
-                email=_optional_text(request.headers.get("X-Auth-Email")),
-                prompt=prompt,
-                negative_prompt=negative,
-                seed=result.seed,
-                steps=steps,
-                true_cfg_scale=cfg,
-                width=frame.width,
-                height=frame.height,
-                duration=result.duration,
-                images=[_png_bytes(image) for image in frame.archive],
-                result_png=output_path(names[0]).read_bytes(),
-                result_name=names[0],
-            )
-        except StorageError as exc:
-            stored = {"saved": False, "storage_error": exc.reason}
-        else:
-            stored = {"saved": True, "storage_id": storage_id}
-    return jsonify(
-        seed=result.seed,
-        duration=round(result.duration, 2),
-        width=frame.width,
-        height=frame.height,
-        images=[{"name": n, "url": url_for("web.output", name=n)} for n in names],
-        **stored,
-    )
+    if email:
+        for task in payload["tasks"]:
+            current_app.extensions["qimg"].store.update("tasks", task["id"], email=email)
+    return jsonify(payload)
 
 
-@bp.get("/outputs/<path:name>")
-def output(name: str):
-    path = output_path(name)
-    if not path.is_file():
-        return jsonify(error="Файл не найден"), 404
-    return send_file(path, mimetype="image/png")
+@bp.get("/api/tasks/<task_id>")
+def api_task(task_id: str):
+    user, _email = _user()
+    return jsonify(_svc().get_task(user, task_id))
 
 
-@bp.app_errorhandler(ValidationError)
-def _on_validation_error(exc: ValidationError):
-    return jsonify(error=str(exc)), 400
+@bp.get("/api/feed")
+def api_feed():
+    user, _email = _user()
+    return jsonify(_svc().feed(user))
 
 
-@bp.app_errorhandler(PipelineError)
-def _on_pipeline_error(exc: PipelineError):
-    log.error("Ошибка пайплайна: %s", exc)
-    return jsonify(error=str(exc)), 503
+@bp.post("/api/renders")
+def api_render():
+    user, _email = _user()
+    body = request.get_json(silent=True) or {}
+    return jsonify(_svc().render(user, body.get("scope") or "", body.get("project_id"), body.get("shape_id")))
 
 
-@bp.app_errorhandler(413)
-def _on_too_large(_exc):
-    return jsonify(error=f"Суммарный размер загрузки больше {settings.max_upload_mb} МБ"), 413
+@bp.get("/api/media/<path:key>")
+def api_media(key: str):
+    user, _email = _user()
+    data, mime = _svc().media(user, key)
+    return send_file(BytesIO(data), mimetype=mime)

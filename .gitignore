@@ -4,3 +4,4 @@ __pycache__/
 .venv/
 data/
 outputs/
+frontend/node_modules/

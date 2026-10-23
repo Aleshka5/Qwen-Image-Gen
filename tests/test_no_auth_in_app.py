@@ -1,10 +1,9 @@
-"""Граница доверия: решение «пускать или нет» принимает Auth Gateway, приложение auth не содержит.
+"""Trust boundary: the Auth Gateway decides who may call. This app does not.
 
-Исключения:
-- POST /api/generate и POST /api/mask-fill читают только X-Auth-User-Id и X-Auth-Email,
-  чтобы сохранить прогон в WebStorage.
-- Страницы читают только X-Auth-Name и показывают его в шапке. Это не сессия и не проверка JWT.
-Остальные заголовки по-прежнему не читаются.
+Identity reads are two functions in routes.py and nothing else:
+- `_caller` reads only X-Auth-User-Id and X-Auth-Email.
+- `_account_name` reads only X-Auth-Name for the header. That is not a session.
+A missing user id is 400. This app never answers 401 or 403.
 """
 
 from __future__ import annotations
@@ -30,14 +29,11 @@ SPOOFED_COOKIES = {"session": "forged", "access_token": "forged.jwt.token"}
 REQUESTS = [
     ("GET", "/healthz", None),
     ("GET", "/", None),
-    ("GET", "/customize", None),
-    ("GET", "/mask-fill", None),
     ("GET", "/api/config", None),
-    ("GET", "/api/logs", None),
-    ("POST", "/api/generate", {"prompt": "A lighthouse at dusk", "seed": "42", "resolution": "1024x1024"}),
-    ("POST", "/api/generate", {"prompt": ""}),
-    ("POST", "/api/customize", {"system_prompt": ""}),
-    ("POST", "/api/mask-fill", {"prompt": ""}),
+    ("GET", "/api/catalog", None),
+    ("GET", "/api/projects", None),
+    ("GET", "/api/settings", None),
+    ("GET", "/api/feed", None),
 ]
 
 
@@ -75,29 +71,8 @@ def test_spoofed_auth_headers_and_cookies_are_ignored(app, method, path, data):
     plain = _send(app, method, path, data, spoof=False)
     spoofed = _send(app, method, path, data, spoof=True)
     assert _normalized(plain) == _normalized(spoofed)
-    if path in {"/api/generate", "/api/mask-fill"} and plain.status_code == 200:
-        for response in (plain, spoofed):
-            body = response.get_json()
-            assert body["saved"] is False
-            assert body["storage_error"] == "not saved: no user id"
-            assert "storage_id" not in body
-            assert body["images"]
-        assert _png_pixels(app, plain) == _png_pixels(app, spoofed)
-
-
-def _png_pixels(app, response):
-    from io import BytesIO
-
-    from PIL import Image
-
-    client = app.test_client()
-    pixels = []
-    for image in response.get_json()["images"]:
-        served = client.get(image["url"])
-        assert served.status_code == 200
-        assert served.mimetype == "image/png"
-        pixels.append(Image.open(BytesIO(served.data)).tobytes())
-    return pixels
+    if path.startswith("/api/") and path != "/api/config" and path != "/api/catalog":
+        assert plain.status_code == 400
 
 
 @pytest.mark.parametrize(("method", "path", "data"), REQUESTS)
@@ -141,7 +116,7 @@ FORBIDDEN_IN_APP = [
     re.compile(r"from flask import[^\n]*\bsession\b"),
 ]
 
-# Чтение и пересылка только этих двух имён. Любой другой X-Auth-* роняет сьют.
+# Only these two names may be read for the caller. Any other X-Auth-* fails the suite.
 _ALLOWED_IDENTITY = ("X-Auth-User-Id", "X-Auth-Email")
 _X_AUTH = re.compile(r"x-auth[a-z0-9_-]*", re.IGNORECASE)
 _FLASK_HEADERS = re.compile(r"(?<![\w.])request\.headers")
@@ -150,13 +125,16 @@ _FLASK_HEADERS = re.compile(r"(?<![\w.])request\.headers")
 def _app_sources():
     return [
         p for p in (ROOT / "app").rglob("*")
-        if p.is_file() and "__pycache__" not in p.parts and p.suffix in {".py", ".html", ".js"}
+        if p.is_file()
+        and "__pycache__" not in p.parts
+        and "ui" not in p.parts
+        and p.suffix in {".py", ".html", ".js"}
     ]
 
 
 def test_app_sources_exist():
     names = {p.name for p in _app_sources()}
-    assert {"__init__.py", "routes.py", "index.html", "app.js"} <= names
+    assert {"__init__.py", "routes.py", "index.html"} <= names
 
 
 @pytest.mark.parametrize("pattern", FORBIDDEN_IN_APP, ids=lambda p: p.pattern)
@@ -233,7 +211,7 @@ def _identity_tokens(line: str) -> list[str]:
     return found
 
 
-_SAVE_VIEWS = frozenset({"api_generate", "api_mask_fill"})
+_SAVE_VIEWS = frozenset({"_caller"})
 
 
 def _save_view_lines() -> set[int]:

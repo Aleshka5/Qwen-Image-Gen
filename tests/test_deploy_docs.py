@@ -1,10 +1,8 @@
-"""README, Dockerfile, Dockerfile.web и compose.yaml: веб-морда за Auth Gateway.
+"""README, Dockerfile, Dockerfile.web, and compose.yaml.
 
-Модель (qwen-inference: torch, веса, карта) — отдельный проект и отдельная сеть:
-её запуск описан в `../Common/models/services/inference/` (или в каталоге
-Switch-Service на master-node). Здесь держится граница: compose этого репозитория
-описывает ровно один контейнер, у него нет ни карты, ни кэша весов, а порт на хост
-не публикует никто.
+The model (qwen-inference: torch, weights, GPU) is another project. This compose
+file describes three processes from the web image: qwen-image, qimg-processor,
+and qimg-orchestrator. None of them has a GPU, a weight cache, or a published port.
 """
 
 from __future__ import annotations
@@ -26,6 +24,7 @@ COMPOSE = (ROOT / "compose.yaml").read_text(encoding="utf-8")
 # qwen-inference:8010. Домашняя сеть морды — auth-сеть.
 NETWORK = "models_network"
 AUTH_NETWORK = "deploy_auth_network"
+COMMON_NETWORK = "common_network"
 WEB_IMAGE = "qwen-image-service:latest"
 # Запуск модели лежит не здесь, а в отдельном проекте:
 MODEL_PROJECT = ROOT.parent / "Common" / "models" / "services" / "inference"
@@ -120,10 +119,9 @@ def test_web_run_has_no_gpu_and_keeps_the_outputs(web_commands):
         assert "qwen-outputs:/data/outputs" in volumes
         assert not any("qwen-hf-cache" in volume for volume in volumes)
         networks = _option(tokens, "--network")
-        # Домашняя сеть — auth (там её ждут gateway и WebStorage `app`),
-        # models_network — только клиентская, чтобы резолвить qwen-inference.
         assert NETWORK in networks
-        auth = [value for value in networks if value != NETWORK]
+        assert COMMON_NETWORK in networks
+        auth = [value for value in networks if value not in {NETWORK, COMMON_NETWORK}]
         assert len(auth) == 1
         assert AUTH_NETWORK in auth[0] or "${AUTH_DOCKER_NETWORK:-deploy_auth_network}" in auth[0]
 
@@ -158,31 +156,42 @@ def test_readme_mentions_gateway_topology(text):
     assert text in README
 
 
-def test_compose_is_the_web_face_only():
+def test_compose_runs_web_and_two_workers():
     services = _block(COMPOSE, "services", indent=0)
-    # Ровно один сервис: модель — отдельный проект со своим compose.
-    assert _yaml_keys(services, 2) == ["qwen-image"]
+    assert _yaml_keys(services, 2) == ["qwen-image", "qimg-processor", "qimg-orchestrator"]
 
     web = _block(services, "qwen-image", indent=2)
     assert f"image: localhost/{WEB_IMAGE}" in web
     assert "container_name: qwen-image" in web
     assert "env_file: .env" in web
-    assert "nvidia.com/gpu=all" not in web
-    assert "qwen-hf-cache" not in web
+    assert "nvidia.com/gpu=all" not in COMPOSE
+    assert "qwen-hf-cache" not in COMPOSE
     assert "qwen-outputs:/data/outputs" in web
     assert "INFERENCE_URL: http://qwen-inference:8010" in web
-
     networks = _block(web, "networks", indent=4)
-    assert f"- {NETWORK}" in networks
-    assert f"- {AUTH_NETWORK}" in networks
+    for name in (NETWORK, AUTH_NETWORK, COMMON_NETWORK):
+        assert f"- {name}" in networks
+
+    processor = _block(services, "qimg-processor", indent=2)
+    assert "python" in processor and "qimg.processor" in processor
+    assert "disable: true" in _block(processor, "healthcheck", indent=4)
+    assert _yaml_keys(_block(processor, "networks", indent=4), 6) == [COMMON_NETWORK]
+    assert "qwen-outputs" not in processor
+
+    orchestrator = _block(services, "qimg-orchestrator", indent=2)
+    assert "qimg.orchestrator" in orchestrator
+    assert "disable: true" in _block(orchestrator, "healthcheck", indent=4)
+    orch_nets = _block(orchestrator, "networks", indent=4)
+    assert f"- {COMMON_NETWORK}" in orch_nets
+    assert f"- {NETWORK}" in orch_nets
+    assert AUTH_NETWORK not in orch_nets
 
     assert "ports:" not in COMPOSE
     assert "8000:8000" not in COMPOSE
-    # Между проектами нет depends_on: сеть модели поднимается не здесь.
     assert not re.search(r"^\s*depends_on:", COMPOSE, re.MULTILINE)
 
     declared = _block(COMPOSE, "networks", indent=0)
-    for name in (NETWORK, AUTH_NETWORK):
+    for name in (NETWORK, AUTH_NETWORK, COMMON_NETWORK):
         body = _block(declared, name, indent=2)
         assert "external: true" in body
 
@@ -191,11 +200,13 @@ def test_compose_is_the_web_face_only():
     assert not (ROOT / "Containerfile").exists()
 
 
-def test_readme_states_webstorage_save_and_network_boundary():
-    assert "WEBSTORAGE_URL" in README or "http://app:8000" in README
+def test_readme_states_shared_backends_and_the_trust_boundary():
     assert "X-Auth-User-Id" in README
-    assert "may contain only the gateway, this service and the Auth stack" in README
-    assert re.search(r"WebStorage is not on `models_network`", README)
+    assert "common_network" in README
+    assert "MONGO_URL" in README
+    assert "qimg-images" in README
+    assert "rejected_cache" in README
+    assert "WebStorage is no longer the archive" in README
 
 
 def test_readme_has_no_host_port_in_commands():
@@ -316,8 +327,9 @@ def test_images_install_with_uv_sync():
         assert "pyproject.toml" in text
 
 
-def test_web_image_copies_only_the_orchestrator():
+def test_web_image_copies_the_workspace_and_not_the_pipeline():
     copies = [line for line in WEBFILE.splitlines() if line.startswith("COPY")]
     assert "COPY --chown=service:service app ./app" in copies
+    assert "COPY --chown=service:service qimg ./qimg" in copies
     assert not any("inference" in line for line in copies)
     assert "COPY --chown=service:service inference ./inference" in DOCKERFILE

@@ -6,9 +6,12 @@ dependencies = [
     "Flask>=3.0.3",
     "gunicorn>=23.0.0",
     "python-dotenv>=1.0.1",
-    # Оркестратор тоже режет и склеивает картинки (imaging, maskfill) — Pillow
-    # нужен обоим образам, не только ml-группе инференса.
+    # Pillow crops and composites images in the web process and the workers.
     "Pillow>=10.4.0",
+    "pymongo>=4.18.3",
+    "minio>=7.2.20",
+    "pika>=1.4.4",
+    "cryptography>=50.0.2",
 ]
 
 [dependency-groups]

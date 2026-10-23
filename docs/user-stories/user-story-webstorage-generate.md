@@ -1,6 +1,6 @@
 # Change Request: Save each generation to WebStorage
 
-> **Status:** Implemented
+> **Status:** Superseded by [user-story-project-workspace.md](user-story-project-workspace.md). WebStorage is no longer the archive. Results go to MinIO bucket `qimg-images`.
 > **Repos:** qwen-image-service (this document). The archive and the history UI live in WebStorage: [`docs/epics/generated-images/init.md`](../../WebStorage/docs/epics/generated-images/init.md).
 > **Caller of this service:** the browser, through the Auth Gateway at `https://image.filenkov.store`.
 > **This service calls:** WebStorage `http://app:8000` on `auth_network`.

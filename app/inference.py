@@ -14,6 +14,7 @@ import base64
 import io
 import json
 import logging
+import re
 import threading
 import time
 import uuid
@@ -89,6 +90,19 @@ def _png_bytes(image: Image.Image) -> bytes:
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     return buffer.getvalue()
+
+
+_STEP = re.compile(r"(\d+)\s*/\s*(\d+)")
+
+
+def _legacy_progress(message: str) -> dict | None:
+    """Map a pre-change-request denoise log line into the 0..10 stage scale."""
+    match = _STEP.search(message or "")
+    if not match:
+        return None
+    step, total = int(match.group(1)), max(1, int(match.group(2)))
+    stage = 4 + min(4, int((step / total) * 4))
+    return {"stage": stage, "total": 10, "name": "denoise"}
 
 
 def _decode(payload: str) -> Image.Image:
@@ -190,7 +204,7 @@ class InferenceClient:
         return str(mode) if mode else None
 
     # --------------------------------------------------------------- generate
-    def generate(self, request: GenerationRequest) -> GenerationResult:
+    def generate(self, request: GenerationRequest, on_progress=None) -> GenerationResult:
         images = [
             (f"image-{index}.png", _png_bytes(image))
             for index, image in enumerate(request.images, start=1)
@@ -230,11 +244,21 @@ class InferenceClient:
                     if event == "log":
                         entry = json.loads(data)
                         live_logs().push(str(entry.get("level") or "INFO"), str(entry.get("message") or ""))
+                        if on_progress is not None:
+                            mapped = _legacy_progress(str(entry.get("message") or ""))
+                            if mapped:
+                                on_progress(mapped)
+                    elif event == "progress" and on_progress is not None:
+                        on_progress(json.loads(data))
+                    elif event == "start" and on_progress is not None:
+                        on_progress({"stage": 1, "total": 10, "name": "start"})
                     elif event == "done":
                         done = json.loads(data)
                         seed = int(done.get("seed", request.seed))
                         duration = float(done.get("duration") or 0.0)
                         payloads = list(done.get("images") or [])
+                        if on_progress is not None:
+                            on_progress({"stage": 10, "total": 10, "name": "done"})
                     elif event == "error":
                         failure = json.loads(data)
                         raise PipelineError(

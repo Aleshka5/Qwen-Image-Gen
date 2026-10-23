@@ -17,6 +17,11 @@ _TMP_ROOT = Path(tempfile.mkdtemp(prefix="qwen-image-tests-"))
 OUTPUT_DIR = _TMP_ROOT / "outputs"
 os.environ["OUTPUT_DIR"] = str(OUTPUT_DIR)
 os.environ["PRELOAD_MODEL"] = "false"
+os.environ["SETTINGS_SECRET"] = "test-settings-secret"
+os.environ["INFERENCE_URL"] = "http://127.0.0.1:9"
+os.environ["INFERENCE_HEALTH_TIMEOUT"] = "0.2"
+for _name in ("MONGO_URL", "RABBIT_URL", "MINIO_ENDPOINT", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY"):
+    os.environ.pop(_name, None)
 
 
 @dataclass(slots=True)
