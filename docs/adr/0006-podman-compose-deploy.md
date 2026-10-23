@@ -24,7 +24,9 @@ Invariants compose must keep:
 
 - Image `qwen-image-service:latest`, container name `qwen-image`.
 - The host port is not published. The process listens on 8000.
-- Networks `qwen_image_gen_network` and `deploy_auth_network`. This project creates the first. The second is external: the Auth stack brings it up, and this repository does not create it.
+- Networks `models_network` and `deploy_auth_network`, both external: this repository creates neither. The
+  gateway reaches `qwen-image:8000` on `models_network`, WebStorage is `app:8000` on `deploy_auth_network`
+  ([ADR 0012](0012-model-container-is-a-separate-project.md) replaced `qwen_image_gen_network`).
 - Device `nvidia.com/gpu=all`.
 - Volumes for the Hugging Face cache at `/data/huggingface` and results at `/data/outputs`.
 - shm 8g, memory 64g.

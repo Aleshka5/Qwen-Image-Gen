@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted
+Accepted. **Network names superseded by [ADR 0012](0012-model-container-is-a-separate-project.md):** the
+dual-network decision stands, but the private network is now `models_network` (owned by Switch-Service on
+master-node, `qwen-inference` lives there) instead of `qwen_image_gen_network`. `deploy_auth_network` is
+unchanged.
 
 ## Context
 

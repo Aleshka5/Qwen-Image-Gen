@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted
+Accepted. **Network names superseded by [ADR 0012](0012-model-container-is-a-separate-project.md):** the
+container is no longer on `qwen_image_gen_network` — the gateway reaches `qwen-image:8000` on
+`models_network`, and the container joins `deploy_auth_network` for WebStorage (ADR 0002). The trust rule
+below is unchanged: no published port, the network is the boundary, the gateway strips `X-Auth-*`.
 
 ## Context
 
