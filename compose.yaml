@@ -1,41 +1,30 @@
-# Два контейнера: инференс с весами и GPU, поверх него — Flask-оркестратор.
+# Веб-морда Qwen-Image 2.1: Flask, страницы, JSON API, WebStorage и HTTP-клиент
+# пайплайна. Ни torch, ни CUDA, ни весов — 212 MB образа (Dockerfile.web) вместо 6.2 GB.
 #
-#   qwen-inference  Dockerfile      torch 2.7.1+cu126, пайплайн Qwen-Image 2.1,
-#                                   GPU, кэш весов, SSE-поток логов и результата
-#   qwen-image      Dockerfile.web  UI, JSON API, WebStorage, клиент инференса;
-#                                   ни карты, ни torch — ~200 MB образа вместо 8 GB
+# МОДЕЛЬ — ОТДЕЛЬНЫЙ ПРОЕКТ И ОТДЕЛЬНАЯ СЕТЬ
+#   Пайплайн (torch, 33 GiB весов, карта) живёт в контейнере qwen-inference, и
+#   запускается он не отсюда:
+#     ../../Common/models/services/inference/    — compose + run.sh этого контейнера
+#     Switch-Service: `state image gpu`          — на master-node (карта под admission)
+#   Его сеть — models_network, и только она. Здесь описана одна веб-морда.
 #
-# Связь между ними — одна HTTP-ручка внутри qwen_image_gen_network:
+# Сети этой морды:
+#   deploy_auth_network  домашняя: сюда приходит Auth Gateway (http://qwen-image:8000)
+#                        и здесь WebStorage отвечает как http://app:8000
+#   models_network       клиентская: единственная причина — резолв имени
+#                        qwen-inference. Модель про auth-сеть не знает ничего
+#
+# Связь между контейнерами — одна HTTP-ручка:
 # POST http://qwen-inference:8010/v1/generate (multipart) -> text/event-stream.
 # Браузер и Auth Gateway по-прежнему видят только http://qwen-image:8000:
 # протокол страницы не изменился, /api/logs отдаёт те же строки пайплайна.
 #
-# Порты на хост не публикуются: снаружи сервис доступен только Auth Gateway
-# как http://qwen-image:8000 в сети qwen_image_gen_network.
-# GPU хосту известен через NVIDIA CDI `nvidia.com/gpu=all`
-# (`nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`).
-#
-# `depends_on` не ждёт готовности весов: оркестратор спрашивает состояние
-# инференса в /healthz, первый запрос дождётся загрузки сам.
+# Порты на хост не публикуются: снаружи сервис доступен только Auth Gateway.
+# Порядок запуска — сначала модель (ей нужна карта), потом эта морда; `depends_on`
+# между проектами нет. Морда терпит отсутствие пайплайна: /healthz отдаёт
+# `inference unreachable`, каждая генерация отвечает 503, пока он не поднялся.
 
 services:
-  qwen-inference:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: localhost/qwen-inference:latest
-    container_name: qwen-inference
-    env_file: .env
-    restart: always
-    shm_size: 8gb
-    mem_limit: 64g
-    devices:
-      - nvidia.com/gpu=all
-    volumes:
-      - qwen-hf-cache:/data/huggingface
-    networks:
-      - qwen_image_gen_network
-
   qwen-image:
     build:
       context: .
@@ -45,22 +34,22 @@ services:
     env_file: .env
     restart: always
     mem_limit: 2g
-    depends_on:
-      - qwen-inference
     volumes:
       - qwen-outputs:/data/outputs
     networks:
-      - qwen_image_gen_network
       - deploy_auth_network
+      - models_network
+    environment:
+      # Единственная связь с моделью — этот адрес. Ключ дублирует .env намеренно:
+      # связь должна быть видна в файле запуска, а не только в env-файле.
+      INFERENCE_URL: http://qwen-inference:8010
 
 networks:
-  qwen_image_gen_network:
-    external: true
   deploy_auth_network:
+    external: true
+  models_network:
     external: true
 
 volumes:
-  qwen-hf-cache:
-    name: qwen-hf-cache
   qwen-outputs:
     name: qwen-outputs

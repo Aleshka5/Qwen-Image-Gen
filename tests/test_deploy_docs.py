@@ -1,8 +1,10 @@
-"""README, Dockerfile, Dockerfile.web и compose.yaml: два контейнера за Auth Gateway.
+"""README, Dockerfile, Dockerfile.web и compose.yaml: веб-морда за Auth Gateway.
 
-Инференс с весами и GPU — один образ, Flask-оркестратор — второй. Тесты держат
-границу между ними: карта и кэш весов только у первого, WebStorage и выходные
-картинки только у второго, порт на хост не публикует никто.
+Модель (qwen-inference: torch, веса, карта) — отдельный проект и отдельная сеть:
+её запуск описан в `../Common/models/services/inference/` (или в каталоге
+Switch-Service на master-node). Здесь держится граница: compose этого репозитория
+описывает ровно один контейнер, у него нет ни карты, ни кэша весов, а порт на хост
+не публикует никто.
 """
 
 from __future__ import annotations
@@ -20,10 +22,13 @@ DOCKERFILE = (ROOT / "Dockerfile").read_text(encoding="utf-8")
 WEBFILE = (ROOT / "Dockerfile.web").read_text(encoding="utf-8")
 COMPOSE = (ROOT / "compose.yaml").read_text(encoding="utf-8")
 
-NETWORK = "qwen_image_gen_network"
+# models_network — сеть модели; веб-морда входит в неё клиентом, чтобы резолвить
+# qwen-inference:8010. Домашняя сеть морды — auth-сеть.
+NETWORK = "models_network"
 AUTH_NETWORK = "deploy_auth_network"
-INFERENCE_IMAGE = "qwen-inference:latest"
 WEB_IMAGE = "qwen-image-service:latest"
+# Запуск модели лежит не здесь, а в отдельном проекте:
+MODEL_PROJECT = ROOT.parent / "Common" / "models" / "services" / "inference"
 
 
 def _code_lines(markdown: str, languages=("bash", "sh", "shell", "")) -> list[str]:
@@ -86,11 +91,18 @@ def _block(text: str, key: str, indent: int) -> str:
     return "\n".join(body)
 
 
-@pytest.fixture(scope="module")
-def inference_commands():
-    commands = _run_commands(INFERENCE_IMAGE)
-    assert commands, f"в README нет ```bash-блока с `podman run ... {INFERENCE_IMAGE}`"
-    return commands
+def _yaml_keys(block: str, indent: int) -> list[str]:
+    keys = []
+    for line in block.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if len(line) - len(line.lstrip(" ")) != indent:
+            continue
+        text = line.strip()
+        if text.startswith("- "):
+            text = text[2:].strip()
+        keys.append(text.rsplit(":", 1)[0].strip())
+    return keys
 
 
 @pytest.fixture(scope="module")
@@ -98,17 +110,6 @@ def web_commands():
     commands = _run_commands(WEB_IMAGE)
     assert commands, f"в README нет ```bash-блока с `podman run ... {WEB_IMAGE}`"
     return commands
-
-
-def test_inference_run_owns_the_gpu_and_the_weight_cache(inference_commands):
-    for tokens in inference_commands:
-        assert _option(tokens, "--name") == ["qwen-inference"]
-        assert "nvidia.com/gpu=all" in _option(tokens, "--device")
-        volumes = _option(tokens, "-v") + _option(tokens, "--volume")
-        assert "qwen-hf-cache:/data/huggingface" in volumes
-        assert _option(tokens, "--shm-size")
-        assert _option(tokens, "--memory")
-        assert NETWORK in _option(tokens, "--network")
 
 
 def test_web_run_has_no_gpu_and_keeps_the_outputs(web_commands):
@@ -119,24 +120,26 @@ def test_web_run_has_no_gpu_and_keeps_the_outputs(web_commands):
         assert "qwen-outputs:/data/outputs" in volumes
         assert not any("qwen-hf-cache" in volume for volume in volumes)
         networks = _option(tokens, "--network")
+        # Домашняя сеть — auth (там её ждут gateway и WebStorage `app`),
+        # models_network — только клиентская, чтобы резолвить qwen-inference.
         assert NETWORK in networks
         auth = [value for value in networks if value != NETWORK]
         assert len(auth) == 1
         assert AUTH_NETWORK in auth[0] or "${AUTH_DOCKER_NETWORK:-deploy_auth_network}" in auth[0]
 
 
-def test_run_does_not_publish_ports(inference_commands, web_commands):
-    for tokens in inference_commands + web_commands:
+def test_run_does_not_publish_ports(web_commands):
+    for tokens in web_commands:
         assert _publish_flags(tokens) == []
         assert not any("8000:8000" in t for t in tokens)
         assert not any("8010:8010" in t for t in tokens)
 
 
-def test_readme_creates_network():
-    assert any(
-        re.fullmatch(rf"podman network create {NETWORK}", line)
-        for line in _code_lines(README)
-    )
+def test_readme_leaves_both_networks_to_their_owners():
+    # models_network создаёт Switch-Service, auth-сеть — Auth-Service; этот
+    # репозиторий не создаёт ни одной и не должен учить обратному.
+    assert "make network" in README
+    assert "podman network create" not in README
 
 
 @pytest.mark.parametrize(
@@ -155,30 +158,28 @@ def test_readme_mentions_gateway_topology(text):
     assert text in README
 
 
-def test_compose_has_two_containers_without_publishing():
-    inference = _block(COMPOSE, "qwen-inference", indent=2)
-    assert f"image: localhost/{INFERENCE_IMAGE}" in inference
-    assert "container_name: qwen-inference" in inference
-    assert "env_file: .env" in inference
-    assert "shm_size: 8gb" in inference
-    assert "mem_limit: 64g" in inference
-    assert "nvidia.com/gpu=all" in inference
-    assert "qwen-hf-cache:/data/huggingface" in inference
-    assert f"- {NETWORK}" in _block(inference, "networks", indent=4)
+def test_compose_is_the_web_face_only():
+    services = _block(COMPOSE, "services", indent=0)
+    # Ровно один сервис: модель — отдельный проект со своим compose.
+    assert _yaml_keys(services, 2) == ["qwen-image"]
 
-    web = _block(COMPOSE, "qwen-image", indent=2)
+    web = _block(services, "qwen-image", indent=2)
     assert f"image: localhost/{WEB_IMAGE}" in web
     assert "container_name: qwen-image" in web
     assert "env_file: .env" in web
     assert "nvidia.com/gpu=all" not in web
     assert "qwen-hf-cache" not in web
     assert "qwen-outputs:/data/outputs" in web
+    assert "INFERENCE_URL: http://qwen-inference:8010" in web
+
     networks = _block(web, "networks", indent=4)
     assert f"- {NETWORK}" in networks
     assert f"- {AUTH_NETWORK}" in networks
 
     assert "ports:" not in COMPOSE
     assert "8000:8000" not in COMPOSE
+    # Между проектами нет depends_on: сеть модели поднимается не здесь.
+    assert not re.search(r"^\s*depends_on:", COMPOSE, re.MULTILINE)
 
     declared = _block(COMPOSE, "networks", indent=0)
     for name in (NETWORK, AUTH_NETWORK):
@@ -193,8 +194,8 @@ def test_compose_has_two_containers_without_publishing():
 def test_readme_states_webstorage_save_and_network_boundary():
     assert "WEBSTORAGE_URL" in README or "http://app:8000" in README
     assert "X-Auth-User-Id" in README
-    assert "only the gateway and `qwen-image`" in README
-    assert re.search(r"WebStorage is not on `qwen_image_gen_network`", README)
+    assert "may contain only the gateway, this service and the Auth stack" in README
+    assert re.search(r"WebStorage is not on `models_network`", README)
 
 
 def test_readme_has_no_host_port_in_commands():
@@ -206,7 +207,7 @@ def test_readme_has_no_host_port_in_commands():
 
 
 def test_readme_has_no_host_localhost_8000():
-    # `podman exec ... localhost:8000` — проба изнутри контейнера, не с хоста.
+    # `podman exec ... 127.0.0.1:8000` — проба изнутри контейнера, не с хоста.
     offenders = [
         line for line in README.splitlines()
         if "localhost:8000" in line and "podman exec" not in line
@@ -228,6 +229,44 @@ def test_readme_documents_uv_and_podman():
     assert "docs/adr/" in README
     assert "docs/tests.md" in README
     assert "docs/inference_api.md" in README
+
+
+@pytest.mark.skipif(
+    not (MODEL_PROJECT / "compose.yaml").exists(),
+    reason="отдельный проект запуска модели (Common/models/services/inference) не найден",
+)
+def test_model_launch_is_a_separate_project_with_its_own_network():
+    model_compose = (MODEL_PROJECT / "compose.yaml").read_text(encoding="utf-8")
+    services = _block(model_compose, "services", indent=0)
+    assert _yaml_keys(services, 2) == ["qwen-inference"]
+
+    model = _block(services, "qwen-inference", indent=2)
+    assert "image: localhost/qwen-inference:latest" in model
+    assert "container_name: qwen-inference" in model
+    assert "nvidia.com/gpu=all" in model
+    assert "qwen-hf-cache:/data/huggingface" in model
+    assert "shm_size: 8gb" in model
+    # Модель живёт только в models_network и никогда в auth-сети.
+    nets = _block(model, "networks", indent=4)
+    assert _yaml_keys(nets, 6) == [NETWORK]
+    assert AUTH_NETWORK not in model
+    # Морда и её артефакты модели не принадлежат.
+    assert "qwen-outputs" not in model
+    assert "Dockerfile.web" not in model
+    # Образ модели собирается из Dockerfile этого репозитория.
+    assert "dockerfile: Dockerfile" in model
+
+
+@pytest.mark.skipif(
+    not (MODEL_PROJECT / "run.sh").exists(),
+    reason="run.sh отдельного проекта запуска модели не найден",
+)
+def test_model_run_script_refuses_a_second_owner():
+    run = (MODEL_PROJECT / "run.sh").read_text(encoding="utf-8")
+    # Два владельца одного имени контейнера дерутся каждый reconcile.
+    assert "switch.service" in run
+    assert "--force" in run
+    assert "state image gpu" in run
 
 
 def _instruction(text: str, keyword: str) -> str:

@@ -3,16 +3,27 @@
 A Flask image-generation service based on [Qwen/Qwen-Image-2.1](https://huggingface.co/Qwen/Qwen-Image-2.1),
 built for a **Tesla V100 32 GB**: up to 10 reference photos, a choice of resolution, and an English prompt.
 
-It runs as **two containers with one API**:
+It runs as **two independent containers with one API**, in two different networks:
 
 ```
 browser ──► Auth Gateway ──► qwen-image      Flask, UI, JSON API, WebStorage, no torch, no GPU
+   (deploy_auth_network)         │            this repository, compose.yaml, ~212 MB
                                  │
                                  │  POST /v1/generate (multipart)  ──►  text/event-stream
-                                 ▼
+                                 ▼            via models_network (name resolution only)
                              qwen-inference  torch 2.7.1+cu126, Qwen-Image 2.1, the GPU,
                                              weight cache, the pipeline and its logs
+                                             ../../Common/models/services/inference/
+                                             switch-service `image` on master-node
 ```
+
+The two halves are separate projects: separate images, separate compose files, separate
+networks, separate lifecycles. This repository owns **the web face only**; the model
+container is launched from
+[`Common/models/services/inference`](../Common/models/services/inference/README.md) (compose +
+`run.sh`) or, on master-node, by Switch-Service (`switch-service state image gpu`).
+Its network is `models_network`; the web face joins that network as a client because that is
+where the name `qwen-inference` resolves, and it never publishes a port to the host.
 
 The browser-facing protocol is unchanged: same pages, same JSON, same `/api/logs` polling.
 What changed is where the weights live — the pipeline moved, as is, into its own container and
@@ -24,17 +35,18 @@ the reasoning in [ADR 0011](docs/adr/0011-split-inference-process.md).
 ## Network and access
 
 Browsers open the service at **https://image.filenkov.store**. That is the Auth Gateway, not this process.
-The `qwen-image` container is reachable only on `qwen_image_gen_network`: the gateway proxies to the upstream `http://qwen-image:8000`.
-This repository creates the network. Auth-Service attaches to it from its own compose file as `external: true`.
+The `qwen-image` container is reachable on `deploy_auth_network` (its home network): the gateway proxies to the upstream `http://qwen-image:8000`.
+It also joins `models_network`, and that is where it resolves `qwen-inference:8010`.
+Both networks are external to this repository: `models_network` is created by Switch-Service (`make network`), the auth network by the Auth stack.
 
 The gateway decides who is allowed: the `image` role (`FAMILY` or `ADMIN` in User-Service).
 The gateway strips incoming client `X-Auth-*` headers. This service has no login, sessions, role check, or JWT check.
 The exception is `POST /api/generate` and `POST /api/mask-fill`: `X-Auth-User-Id` and `X-Auth-Email` are read only to sign the save into WebStorage.
 `GET` routes, including `GET /mask-fill`, do not use those headers. A request that arrived here is already allowed.
-The trust boundary is the network itself: `qwen_image_gen_network` may contain only the gateway and `qwen-image`.
-`qwen-inference` is the second half of the same service (its pipeline), serves no UI, and is called only by `qwen-image`
-over its private HTTP contract; do not put any other container on that network.
-WebStorage is not on `qwen_image_gen_network`. Any other container on that network bypasses the role check.
+The trust boundary is the network itself: `deploy_auth_network` may contain only the gateway, this service and the Auth stack.
+`qwen-inference` is the model half of the same service, serves no UI, is called only by `qwen-image`
+over its private HTTP contract, and lives in `models_network`; do not put any other container on that network's behalf.
+WebStorage is not on `models_network` — that is why the web face has two networks and not one.
 
 To call WebStorage after a successful generation or mask fill, `qwen-image` also joins the Auth network.
 `AUTH_DOCKER_NETWORK` is the Auth stack network (`deploy_auth_network` when Auth is started from `Auth-Service/deploy`).
@@ -49,8 +61,8 @@ The archive address in `.env` is `WEBSTORAGE_URL=http://app:8000`.
 
 `GET /healthz` is anonymous in the application. The gateway serves that path without a role, for operator probes. Everything else requires the `image` role.
 
-> **Never add `-p 8000:8000` or a `ports` section to `compose.yaml`.** That would put the GPU UI on the host network next to the gateway and bypass it.
-> The same holds for `8010` — the inference port is private to `qwen_image_gen_network`.
+> **Never add `-p 8000:8000` or a `ports` section to `compose.yaml`.** That would put the UI on the host network next to the gateway and bypass it.
+> The same holds for `8010` — the inference port stays inside `models_network` (the model's compose publishes it on `127.0.0.1` for the health probe only).
 
 ---
 
@@ -109,7 +121,8 @@ Check that Podman sees the card through CDI:
 podman run --rm --device nvidia.com/gpu=all docker.io/nvidia/cuda:12.6.3-base-ubuntu22.04 nvidia-smi
 ```
 
-`compose.yaml` requests the same device on `qwen-inference`: `devices: [nvidia.com/gpu=all]`. Without a CDI spec on the host, the GPU does not enter the container.
+The model's compose file requests the same device on `qwen-inference`: `devices: [nvidia.com/gpu=all]` in
+[`Common/models/services/inference/compose.yaml`](../Common/models/services/inference/compose.yaml). Without a CDI spec on the host, the GPU does not enter the container.
 
 ### 2. Prepare the environment
 
@@ -117,13 +130,20 @@ podman run --rm --device nvidia.com/gpu=all docker.io/nvidia/cuda:12.6.3-base-ub
 cp .env.example .env
 ```
 
-Both containers read the same `.env`; its sections say which one reads what.
-Set at least `MODEL_ID` / `PIPELINE_CLASS` (if you need another revision) and, for gated repositories, `HF_TOKEN`.
+This `.env` is the web face's: it holds `INFERENCE_URL`, the generation limits and the WebStorage address.
+Set at least `INFERENCE_URL` and, if WebStorage lives elsewhere, `WEBSTORAGE_URL`.
 `INFERENCE_URL` is how `qwen-image` finds the pipeline: `http://qwen-inference:8010` inside the network.
+
+The web face no longer shares an env file with the model: model settings (`MEMORY_MODE`,
+`TEXT_ENCODER_*`, `VAE_*`, `PRELOAD_MODEL`) live in
+[`Common/models/services/inference/env.example`](../Common/models/services/inference/env.example).
+The keys in this repository's `.env` that the model used to read are ignored by the web face.
 
 ### 3. Build the images
 
-Two images, because they have two different contracts and two different lifetimes:
+Two images, because they have two different contracts and two different lifetimes. Both
+`Dockerfile`s live here; **only the web one is built by this repository's compose**. The
+model image is built by [`Common/models/services/inference/run.sh`](../Common/models/services/inference/run.sh):
 
 ```bash
 podman build -t localhost/qwen-inference:latest -f Dockerfile .
@@ -149,45 +169,47 @@ To check only the ML stack, without building the service:
 podman build --target ml -t qwen-image-ml -f Dockerfile .
 ```
 
-### 4. Volumes for the weight cache and results, and the network
+### 4. Volumes and the two networks
 
-Weights download once and must survive recreating the container:
-
-```bash
-podman volume create qwen-hf-cache && podman volume create qwen-outputs
-```
-
-The network the Auth Gateway uses to reach the service (once):
+Results survive recreating the container:
 
 ```bash
-podman network create qwen_image_gen_network
+podman volume create qwen-outputs
 ```
 
-The Auth network (`AUTH_DOCKER_NETWORK`; `deploy_auth_network` when started from `Auth-Service/deploy`) is not created here.
-The Auth stack must already be up before start: on that network WebStorage answers as `app`.
+Neither network is created here, and both must exist before start:
+
+```bash
+cd ../Switch-Service && make network    # models_network (+ attaches the gateway and rag-chat)
+```
+
+The auth network (`AUTH_DOCKER_NETWORK`; `deploy_auth_network` when started from `Auth-Service/deploy`) belongs to the
+Auth stack. It must already be up before start: on that network WebStorage answers as `app`, and the gateway is what
+sends browser traffic to `http://qwen-image:8000`.
+
+The weight cache `qwen-hf-cache` is not this project's volume any more: the model container mounts it from
+[`Common/models/services/inference`](../Common/models/services/inference/compose.yaml).
 
 ### 5. Start
 
-Start the pipeline first: it loads the weights and answers `/healthz` long before it is `loaded`.
-Port 8010 is not published on the host — see [Network and access](#network-and-access).
+The model first: it needs the card, and it loads the weights. It is **another project**, so this repository does not
+start it — either the switch, or that project's own script:
 
 ```bash
-podman run -d --name qwen-inference \
-  --network qwen_image_gen_network \
-  --device nvidia.com/gpu=all \
-  --env-file .env \
-  -v qwen-hf-cache:/data/huggingface \
-  --shm-size=8g --memory=64g \
-  localhost/qwen-inference:latest
+cd ../Switch-Service && .venv/bin/switch-service --url http://127.0.0.1:8095 state image gpu
 ```
 
-Then the orchestrator. It needs no GPU and no weight cache; it keeps the network name `qwen-image`,
-which is what the gateway proxies to.
+```bash
+cd ../Common/models/services/inference && ./run.sh
+```
+
+Then the web face. It needs no GPU and no weight cache; it keeps the network name `qwen-image`, which is what the
+gateway proxies to, and it joins `models_network` only to resolve `qwen-inference:8010`.
 
 ```bash
 podman run -d --name qwen-image \
-  --network qwen_image_gen_network \
   --network "${AUTH_DOCKER_NETWORK:-deploy_auth_network}" \
+  --network models_network \
   --env-file .env \
   -v qwen-outputs:/data/outputs \
   --memory=2g \
@@ -203,12 +225,8 @@ podman logs -f qwen-inference
 
 Every generation logs to the same place, one line per pipeline step; the browser reads the same lines through `/api/logs`.
 
-Readiness is checked from inside the network or from inside the container (both images have `curl`).
-The orchestrator reports its own state **and** the inference state:
-
-```bash
-podman run --rm --network qwen_image_gen_network docker.io/curlimages/curl -s http://qwen-image:8000/healthz
-```
+Readiness is checked from inside the container (both images have `curl`).
+The web face reports its own state **and** the inference state:
 
 ```bash
 podman exec qwen-image curl -fsS http://127.0.0.1:8000/healthz
@@ -221,35 +239,44 @@ podman exec qwen-inference curl -fsS http://127.0.0.1:8010/healthz
 `{"loaded": true}` from `qwen-image` means the pipeline behind it is loaded and the service accepts requests.
 The UI is at `https://image.filenkov.store/` (through the gateway).
 
-Nothing listens on public `:8000` or `:8010` on the host. Both commands should print nothing:
+Nothing listens on public `:8000` on the host, and nothing listens on `:8010` outside the container's network.
+These should print nothing:
 
 ```bash
-podman port qwen-image; podman port qwen-inference; ss -ltn | grep -E ':(8000|8010)'
+podman port qwen-image; ss -ltn | grep -E ':(8000)'
 ```
 
-To watch the stream the orchestrator consumes, ask the inference container directly:
+To watch the stream the web face consumes, ask the inference container directly (it is the only container in
+`models_network`, so run the client inside that network):
 
 ```bash
-podman run --rm --network qwen_image_gen_network -v "$PWD":/work:ro -w /work docker.io/curlimages/curl -N \
+podman run --rm --network models_network -v "$PWD":/work:ro -w /work docker.io/curlimages/curl -N \
   -X POST http://qwen-inference:8010/v1/generate \
   -F "prompt=a cinematic portrait, soft rim light" -F "width=512" -F "height=512" -F "steps=4" -F "seed=7"
 ```
 
 ### Podman Compose
 
-`compose.yaml` starts both containers on the external `qwen_image_gen_network`; `qwen-image` additionally joins `deploy_auth_network`.
-Both networks must exist before start. Step 4 creates the first. The Auth stack creates the second; this repository does not.
+`compose.yaml` starts **one** container: the web face. The model is a separate project with its own compose file
+([`Common/models/services/inference/compose.yaml`](../Common/models/services/inference/compose.yaml)) and its own
+network, so there is no `depends_on` between them and no shared project name.
 
-The file sets `env_file: .env` for both, `shm_size: 8gb`, `mem_limit: 64g` and the CDI device on `qwen-inference`,
-and the volumes `qwen-hf-cache` (inference) and `qwen-outputs` (orchestrator). There is no `ports` section:
-8000 and 8010 stay inside the networks. `restart: always` brings the containers back after the Podman daemon restarts.
+The file sets `env_file: .env`, `mem_limit: 2g`, the volume `qwen-outputs`, and the networks
+`deploy_auth_network` (home) and `models_network` (client). There is no `ports` section: 8000 stays inside the
+networks. `restart: always` brings the container back after the Podman daemon restarts.
 
 ```bash
 podman compose up -d
 ```
 
-`podman compose up -d` on an already running stack recreates the containers; `qwen-inference` loads the model again.
-Logs: `podman compose logs -f qwen-inference qwen-image`.
+`podman compose up -d` on an already running stack recreates the container; the weights are not touched, because
+they belong to the model container. Logs: `podman compose logs -f qwen-image`.
+
+> **On `master-node` the model container belongs to Switch-Service**, not to compose: the catalog
+> `Switch-Service/config/services.models-network.yaml` declares it as service `image` (container name
+> `qwen-inference`, GPU, weights, 28672 MiB of VRAM) and creates it in `models_network`. Start it with
+> `switch-service state image gpu`. Using the other project's `run.sh` there is refused on purpose: two owners of
+> one container name recreate it every reconcile, and only the switch enforces the VRAM budget.
 
 ---
 
@@ -275,7 +302,7 @@ From outside, requests go to `https://image.filenkov.store/api/generate` and nee
 For an operator debug session, from inside the network, call `http://qwen-image:8000` directly:
 
 ```bash
-podman run --rm --network qwen_image_gen_network -v "$PWD":/work:ro -w /work docker.io/curlimages/curl -X POST http://qwen-image:8000/api/generate -F "prompt=A cinematic portrait of the person, soft rim light, 85mm lens" -F "resolution=2048x2048" -F "steps=40" -F "true_cfg_scale=1" -F "images=@face1.jpg" -F "images=@face2.jpg" > result.json
+podman run --rm --network models_network -v "$PWD":/work:ro -w /work docker.io/curlimages/curl -X POST http://qwen-image:8000/api/generate -F "prompt=A cinematic portrait of the person, soft rim light, 85mm lens" -F "resolution=2048x2048" -F "steps=40" -F "true_cfg_scale=1" -F "images=@face1.jpg" -F "images=@face2.jpg" > result.json
 ```
 
 Response after a successful save to WebStorage:
@@ -378,7 +405,7 @@ tests/              pytest suite, runs without a GPU and without ML dependencies
 pyproject.toml      web dependencies, ml group (torch cu126), and dev group
 Dockerfile          CUDA 12.6 + torch image; gunicorn on 0.0.0.0:8010 (inference)
 Dockerfile.web      python:3.10-slim image; gunicorn on 0.0.0.0:8000 (orchestrator)
-compose.yaml        both containers on qwen_image_gen_network; GPU and caches split; no host port
+compose.yaml        the web face only: deploy_auth_network (home) + models_network (client); no host port
 ```
 
 Generation is serialized with `threading.Lock` inside `qwen-inference`: one card, one job at a time. Concurrent requests wait

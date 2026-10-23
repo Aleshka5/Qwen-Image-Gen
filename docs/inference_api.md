@@ -1,6 +1,6 @@
 # Internal contract: `qwen-image` → `qwen-inference`
 
-One endpoint does the work, one reports state. Both live inside `qwen_image_gen_network`
+One endpoint does the work, one reports state. Both live inside `models_network`
 and are never exposed to the Auth Gateway. This is not the public API: the browser still talks
 to `/api/generate`, `/api/customize`, `/api/mask-fill` and `/api/logs` exactly as before.
 
@@ -113,7 +113,7 @@ one chunk, and the page would see the pipeline log only after the image.
 
 | Setting | Default | Covers |
 |---|---|---|
-| `INFERENCE_URL` | `http://qwen-inference:8010` | DNS name inside `qwen_image_gen_network` |
+| `INFERENCE_URL` | `http://qwen-inference:8010` | DNS name inside `models_network` |
 | `INFERENCE_TIMEOUT` | `1800` | the whole stream of one job, read timeout |
 | `INFERENCE_HEALTH_TIMEOUT` | `3` | one `/healthz` probe |
 

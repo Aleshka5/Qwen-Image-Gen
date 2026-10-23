@@ -52,14 +52,14 @@ The file reads the README, `Dockerfile`, `Dockerfile.web`, and `compose.yaml`. I
 - The service start has no `-p`, `--publish`, `-P`, `8000:8000`, or `8010:8010`. README commands do not publish 8000 and do not use `localhost:8000` from the host (`podman exec … localhost:8000` is allowed).
 - Two containers: `qwen-inference` (image `qwen-inference:latest`, GPU device, `qwen-hf-cache`, `shm`/memory limits) and `qwen-image` (image `qwen-image-service:latest`, outputs volume, two networks). Only the orchestrator joins `deploy_auth_network` (in `podman run` it may be `${AUTH_DOCKER_NETWORK:-deploy_auth_network}`). `compose.yaml` has no `ports` section.
 - The GPU, the weight cache and `shm_size`/`--shm-size` stay on the inference container and never appear on the orchestrator.
-- The README has the public URL, the network name, `Auth Gateway`, upstream `http://qwen-image:8000`, the internal `http://qwen-inference:8010`, `text/event-stream`, `X-Auth-User-Id`, and the sentence that WebStorage is not on `qwen_image_gen_network`.
+- The README has the public URL, the network name, `Auth Gateway`, upstream `http://qwen-image:8000`, the internal `http://qwen-inference:8010`, `text/event-stream`, `X-Auth-User-Id`, and the sentence that WebStorage is not on `models_network`.
 - `Dockerfile`: exactly one `CMD`, gunicorn, `--bind 0.0.0.0:8010`, `--workers 1`, `--timeout 0`, argument `inference.wsgi:app`; `HEALTHCHECK` curls `:8010/healthz`; install is `uv sync --frozen --no-dev --group ml --no-install-project`, with no `pip install`.
 - `Dockerfile.web`: exactly one `CMD`, gunicorn, `--bind 0.0.0.0:8000`, `--workers 1`, `--timeout 0`, argument `wsgi:app`; `HEALTHCHECK` curls `:8000/healthz`; install is `uv sync --frozen --no-dev --no-install-project` — the `ml` group must not be there, and only `app/` is copied.
 - `Containerfile` and `deploy/qwen-image.container` are absent. The README documents `uv sync` and `uv run pytest` and links to `docs/`.
 
 Thread counts are asserted only as “more than one” on the inference side: the split needs a thread for the stream and a thread for `/healthz`. See [adr/0006-podman-compose-deploy.md](adr/0006-podman-compose-deploy.md) and [adr/0011-split-inference-process.md](adr/0011-split-inference-process.md).
 
-`test_podman_network.py` starts a temporary Podman network and container with alias `qwen-image`, without a GPU and without a published port, and from another container on that network requests `http://qwen-image:8000/healthz`. It does not touch the real `qwen_image_gen_network` or the `qwen-image` container. `podman port` and `PortBindings` must be empty.
+`test_podman_network.py` starts a temporary Podman network and container with alias `qwen-image`, without a GPU and without a published port, and from another container on that network requests `http://qwen-image:8000/healthz`. It does not touch the real `models_network` or the `qwen-image` container. `podman port` and `PortBindings` must be empty.
 
 ## Not covered
 
