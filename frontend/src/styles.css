@@ -188,42 +188,48 @@
   min-width: 44px;
 }
 
-.btn {
+.app .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 0.4rem;
-  border: 1px solid var(--ink);
-  background: var(--ink);
-  color: var(--paper);
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--paper-raised);
   padding: 0.45rem 0.95rem;
   cursor: pointer;
   font-weight: 650;
   letter-spacing: 0.01em;
 }
 
-.btn:hover { background: var(--accent-text); border-color: var(--accent-text); }
-
-.btn-ghost {
-  background: transparent;
-  color: var(--ink);
+.app .btn:hover {
+  background: var(--accent-text);
+  border-color: var(--accent-text);
+  color: var(--paper-raised);
 }
 
-.btn-ghost:hover {
+.app .btn.btn-ghost {
+  background: transparent;
+  color: var(--ink);
+  border-color: var(--ink);
+}
+
+.app .btn.btn-ghost:hover {
   background: var(--chip);
   color: var(--ink);
   border-color: var(--ink);
 }
 
-.btn-danger {
+.app .btn.btn-danger {
   background: transparent;
   color: var(--danger);
   border-color: var(--danger);
 }
 
-.btn-danger:hover {
+.app .btn.btn-danger:hover {
   background: var(--danger);
-  color: var(--paper);
+  color: var(--paper-raised);
+  border-color: var(--danger);
 }
 
 .btn:disabled,

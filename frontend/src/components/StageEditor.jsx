@@ -298,27 +298,32 @@ export default function StageEditor({ projectId, parentId, visible }) {
     push({ type, projectId, shapeId: shape.id });
   }
 
-  function openMenu(shape) {
-    const node = document.getElementById(`shape-${shape.id}`);
+  function openMenu(shape, node) {
     const rect = node?.getBoundingClientRect();
-    if (!rect) return;
-    setMenu({ id: shape.id, x: rect.left, y: rect.top });
+    if (!rect || rect.width < 1 || rect.height < 1) return;
+    setMenu({
+      id: shape.id,
+      x: rect.right,
+      y: rect.top,
+      anchor: 'top-right',
+    });
   }
 
-  function selectShape(shape) {
+  function selectShape(shape, node) {
     setSelectedId(shape.id);
     if (!shape.saved) {
       setMenu(null);
       return;
     }
     clearTimeout(clickTimer.current);
-    clickTimer.current = setTimeout(() => openMenu(shape), 260);
+    clickTimer.current = setTimeout(() => openMenu(shape, node), 260);
   }
 
   function onShapePointerDown(event, shape, handle) {
     if (event.button > 0 || busyRef.current === 'move' || busyRef.current === 'delete') return;
     event.stopPropagation();
     setSelectedId(shape.id);
+    const shapeNode = event.currentTarget.closest('.shape');
     const frame = frameRef.current?.getBoundingClientRect();
     if (!frame?.width || !frame?.height) return;
     const origin = { ...shape };
@@ -342,7 +347,7 @@ export default function StageEditor({ projectId, parentId, visible }) {
       if (!moved) {
         setDraft(null);
         setDraftBad(false);
-        selectShape(shape);
+        selectShape(shape, shapeNode);
         return;
       }
       if (hitsAny(latest, shapesRef.current)) {
@@ -547,7 +552,7 @@ export default function StageEditor({ projectId, parentId, visible }) {
         </div>
       </div>
       {menu && menuShape ? (
-        <ContextMenu x={menu.x} y={menu.y} onClose={() => setMenu(null)} label="Shape">
+        <ContextMenu x={menu.x} y={menu.y} anchor={menu.anchor} onClose={() => setMenu(null)} label="Shape">
           {nested ? (
             <button type="button" role="menuitem" onClick={() => switchType(menuShape)} disabled={busy === 'type'}>
               {menuShape.type === 'text' ? 'Switch to photo' : 'Switch to text'}
