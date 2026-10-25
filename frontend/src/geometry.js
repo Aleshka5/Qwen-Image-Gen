@@ -140,14 +140,18 @@ export function findOpening(existing, kind, aspect = 1) {
     [0.4, 0.12],
     [0.12, 0.32],
   ];
+  let fallback = null;
   for (const [x, y] of spots) {
     const shape = clampShape({ id: '__draft__', kind, x, y, w, h });
+    if (!fallback) fallback = shape;
     if (!hitsAny(shape, existing)) {
       const { id, ...rest } = shape;
       return rest;
     }
   }
-  return null;
+  if (!fallback) return null;
+  const { id, ...rest } = fallback;
+  return rest;
 }
 
 export function isTopLevel(shape) {

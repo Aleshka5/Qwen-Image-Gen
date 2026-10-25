@@ -93,19 +93,34 @@ def test_project_shapes_commit_and_lock(client):
     first = _json(overlap)
     assert first["color"] != "#143d8f"
     assert first["saved"] is False
-    blocked = client.post(
+    second = client.post(
         f"/api/projects/{project_id}/shapes",
         json={"kind": "rect", "x": 0.2, "y": 0.2, "w": 0.4, "h": 0.4},
         headers=AUTH,
     )
-    assert blocked.status_code == 400
-    assert "overlap" in _json(blocked)["error"].lower()
+    assert second.status_code == 200, second.data
+    other = _json(second)
+    moved_over = client.patch(
+        f"/api/shapes/{other['id']}",
+        json={"x": 0.15, "y": 0.15},
+        headers=AUTH,
+    )
+    assert moved_over.status_code == 200
+    refused = client.post(f"/api/projects/{project_id}/commit", json={"parent_id": None}, headers=AUTH)
+    assert refused.status_code == 400
+    assert "overlap" in _json(refused)["error"].lower()
+    cleared = client.patch(
+        f"/api/shapes/{other['id']}",
+        json={"x": 0.55, "y": 0.55},
+        headers=AUTH,
+    )
+    assert cleared.status_code == 200
 
     saved = client.post(f"/api/projects/{project_id}/commit", json={"parent_id": None}, headers=AUTH)
     assert saved.status_code == 200
     body = _json(saved)
     assert body["project"]["geometry_locked"] is True
-    shape = body["shapes"][0]
+    shape = next(item for item in body["shapes"] if item["id"] == first["id"])
     assert shape["saved"] is True
     assert shape["geometry_locked"] is False
     variants = _json(client.get(f"/api/shapes/{shape['id']}/variants", headers=AUTH))

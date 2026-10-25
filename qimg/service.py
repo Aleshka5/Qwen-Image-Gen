@@ -238,8 +238,6 @@ class Service:
             box = clamp_box(self._box(body, "rect"))
         else:
             raise AppError("Kind must be rect, circle, or full_frame")
-        if hits_any(box, [self._as_box(item) for item in siblings]):
-            raise AppError("That overlaps another shape")
         color = PHOTO if parent else self._next_color(siblings)
         doc = {
             "id": _new_id(),
@@ -276,12 +274,6 @@ class Service:
             float(shape["h"] if saved else body.get("h", shape["h"])),
             kind,
         ))
-        siblings = [
-            item for item in self._siblings(user, project["id"], shape.get("parent_id"))
-            if item["id"] != shape["id"]
-        ]
-        if hits_any(box, [self._as_box(item) for item in siblings]):
-            raise AppError("That overlaps another shape")
         updated = self.rt.store.update("shapes", shape_id, x=box.x, y=box.y, w=box.w, h=box.h)
         if saved:
             self._rewrite_originals(project, updated)
@@ -307,6 +299,10 @@ class Service:
         siblings = self._siblings(user, project_id, parent["id"] if parent else None)
         if not siblings:
             raise AppError("Add a shape before saving")
+        boxes = [self._as_box(shape) for shape in siblings]
+        for index, box in enumerate(boxes):
+            if hits_any(box, boxes[index + 1:]):
+                raise AppError("Shapes overlap. Move them apart before saving.")
         for shape in siblings:
             self.rt.store.update("shapes", shape["id"], saved=True)
             fresh = self._shape(user, shape["id"])
