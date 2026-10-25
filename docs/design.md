@@ -54,6 +54,8 @@ Vite and React, built into `app/static/ui` and served by the same Flask process.
 
 Both sidebars are overlays, including at 390px. The right sidebar is the feed, an empty object column, or the variant list.
 
+The feed is the latest 50 tasks, newest first. A tile shows the seed, the status, and the result photo. A task that is not done yet shows the processing stage and the seed, with no photo. Clicking a tile opens the form that created it, in that project, with the prompt and the other stored settings filled in. The fields stay editable. Up returns to the previous view, and the sidebar stays on the Feed tab. The replay rules are [user-story-feed-replay.md](user-stories/user-story-feed-replay.md).
+
 The editor draws rectangles (and "use entire frame") on the photo. Zoom and pan keep shapes in image coordinates. Parts may overlap while they are placed or moved. Confirm-and-save runs the same polygon test as `frontend/src/geometry.js` and refuses the level while any parts overlap. After confirm-and-save the level accepts delete and move, not a new shape and not a resize. Delete or Backspace removes the selected rectangle or circle. Circles exist only on level 2. Double-click or Edit goes down. A single click on a saved shape opens a context menu. Switching photo/text keeps one variant history. Text is not editable yet.
 
 Generation always sends the original crop. The selected variant is shown at the current level and in the final render only.
@@ -64,7 +66,7 @@ Local Qwen is kind `qwen`, id `local`. The worker calls `InferenceClient.generat
 
 Wan, OpenRouter, and Higgsfield are called from `qimg/providers.py`. Authorization headers are built there, not in `app/`. Wan receives JPEG base64. Higgsfield receives a file uploaded to its own storage, then a `public_url`, because MinIO is private. OpenRouter has no images endpoint: the request is `POST /api/v1/chat/completions` with `modalities: ["image", "text"]`, the crop and the mask travel as base64 `image_url` parts, and the picture comes back as a base64 data URL in `choices[0].message.images`. Gemini models also accept `image_config.aspect_ratio`, so the requested frame picks the closest documented ratio; other models are resized after the fact like every external answer. Mask fill on those models is the mask image plus a prompt hint. The hard circle mask is applied to the returned image, for every provider.
 
-If the project is gone when the result comes back, the worker deletes the blob it just wrote and marks the task `invalidated`.
+If the project or the part is gone when the result comes back, the worker deletes the blob it just wrote and deletes the task. Deleting a project or a part does the same for every task that belonged to it, including the artifact files once nothing else references them. The feed does not keep an `invalidated` row.
 
 ## What was removed
 

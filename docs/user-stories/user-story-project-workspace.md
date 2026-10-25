@@ -17,7 +17,7 @@
 7. I pick a provider I enabled in Settings. Local Qwen is always there. Wan, OpenRouter, and Higgsfield need a key that the page never shows again, only a hint.
 8. I watch status by polling. A local job shows a stage out of 10. An external job shows queued, running, done, or failed.
 9. I choose a variant and render. The picture uses the selected generated variants on the original photo. A circle is clipped to a hard mask.
-10. I delete a project and confirm. Queued work for it is dropped. A result that finishes after the delete is not kept.
+10. I delete a project and confirm. Its tasks are deleted with their files. A result that finishes after the delete is not kept. Opening a past run from the Feed is [user-story-feed-replay.md](user-story-feed-replay.md).
 
 ## Out of scope
 

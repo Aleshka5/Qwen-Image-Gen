@@ -38,12 +38,12 @@ Local Qwen is always present with id `local` and kind `qwen`. Wan needs `api_key
 | `POST` | `/api/projects` | multipart `kind=photo\|scratch`, optional `file`, optional `name` |
 | `GET` | `/api/projects/:id` | `{project, shapes}` |
 | `PATCH` | `/api/projects/:id` | `{name}` |
-| `DELETE` | `/api/projects/:id` | `{deleted: true}`; queued tasks become `invalidated` |
+| `DELETE` | `/api/projects/:id` | `{deleted: true}`; every task of that project is deleted, with its result, its variant, and its artifact files once no remaining task points at them |
 | `GET` | `/api/projects/:id/preview` | PNG, longest side at most 2048 |
 | `POST` | `/api/projects/:id/shapes` | `{parent_id, kind, x, y, w, h}` |
 | `POST` | `/api/projects/:id/commit` | `{parent_id}` saves every sibling and writes an original crop |
 | `PATCH` | `/api/shapes/:id` | move, and resize only before save |
-| `DELETE` | `/api/shapes/:id` | the shape and its children |
+| `DELETE` | `/api/shapes/:id` | the shape, its children, and every task of those shapes, with the same file cleanup as a project delete |
 | `POST` | `/api/shapes/:id/type` | `{type: photo\|text}` |
 | `GET` | `/api/shapes/:id/source` | full crop; `?preview=1` thumbnails it |
 | `GET` | `/api/shapes/:id/variants` | `{variants}` |
@@ -104,12 +104,21 @@ Artifact order stored with the task: `source` (the original crop, never a select
   "status": "queued",
   "progress": {"stage": 0, "total": 10, "name": "queued"},
   "mode": "customize",
+  "provider_id": "local",
   "provider_kind": "qwen",
   "model": "qwen-image-2.1",
   "seed": 7,
   "prompt": "...",
+  "negative_prompt": "",
+  "steps": 4,
+  "true_cfg_scale": 1.0,
+  "width": 1024,
+  "height": 1024,
+  "copies": 1,
   "error": null,
   "result_url": null,
+  "mask_url": null,
+  "references": [{"url": "/api/media/user/batches/batch/2.png"}],
   "shape_id": "...",
   "project_id": "...",
   "project_name": "...",
@@ -117,7 +126,7 @@ Artifact order stored with the task: `source` (the original crop, never a select
 }
 ```
 
-`provider_kind` is `qwen`, `wan`, `openrouter`, or `higgsfield`. Local jobs include `progress`. External jobs send `progress: null` and the UI shows the status word. Status `invalidated` means the project or the object was deleted before the result could be kept. Other statuses the UI understands are `queued`, `running`, `done`, and `failed`.
+`references` lists artifact role `reference` in stored order. `mask_url` is set for `mask_fill` and is null otherwise. The source crop is not included; the form still reads the live part. `provider_kind` is `qwen`, `wan`, `openrouter`, or `higgsfield`. Local jobs include `progress`. External jobs send `progress: null` and the UI shows the status word. Statuses the UI understands are `queued`, `running`, `done`, and `failed`. A task whose project or part is gone is deleted, along with its files, and is absent from both of these responses. `GET /api/tasks/:id` then answers 404.
 
 `POST /api/renders` with `{scope: "project"|"shape", project_id, shape_id}` returns `{url}`. The composite pastes selected **generated** variants onto the original photo. A circle is a hard alpha mask after the model returns. A scratch render returns the selected generated variant, or the latest one.
 

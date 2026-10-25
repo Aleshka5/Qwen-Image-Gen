@@ -9,7 +9,7 @@ The suite in `tests/` runs under pytest and, by default, needs no GPU, torch, di
 | File | What it holds |
 |---|---|
 | `tests/conftest.py` | Stub for `app.generator`, output directory, Flask client |
-| `tests/test_workspace.py` | Projects, shapes, queue, idempotency, render, secrets, on the memory store |
+| `tests/test_workspace.py` | Projects, shapes, queue, idempotency, render, secrets, feed replay fields, and task removal when a project or part is deleted, on the memory store |
 | `tests/test_backends.py` | The queue's invariants without a broker: publish holds the connection lock, an intake failure fails the task, a restart fails orphaned `running` tasks |
 | `tests/test_account_header.py` | The gateway name in the header, and no name when the header is missing |
 | `tests/test_maskfill.py` | Mask pairing: the fitted photo and the nearest-neighbour mask |
