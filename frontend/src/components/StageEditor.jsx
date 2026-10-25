@@ -42,7 +42,6 @@ export default function StageEditor({ projectId, parentId, visible }) {
   const [pan, setPan] = useState({ x: 40, y: 40 });
   const [selectedId, setSelectedId] = useState(null);
   const [draft, setDraft] = useState(null);
-  const [draftBad, setDraftBad] = useState(false);
   const [sealed, setSealed] = useState(false);
   const [busy, setBusy] = useState('');
   busyRef.current = busy;
@@ -255,6 +254,10 @@ export default function StageEditor({ projectId, parentId, visible }) {
       showError('Add a shape before saving.');
       return;
     }
+    if (shapes.some((shape) => hitsAny(shape, shapes))) {
+      showError('Shapes overlap. Move them apart before saving.');
+      return;
+    }
     setBusy('save');
     try {
       await api.commit(projectId, parentId || null);
@@ -272,7 +275,8 @@ export default function StageEditor({ projectId, parentId, visible }) {
   }
 
   async function removeShape(shape) {
-    if (busy) return;
+    if (!shape || busyRef.current) return;
+    busyRef.current = 'delete';
     setBusy('delete');
     setMenu(null);
     try {
@@ -282,9 +286,31 @@ export default function StageEditor({ projectId, parentId, visible }) {
     } catch (err) {
       showError(err.message);
     } finally {
+      busyRef.current = '';
       setBusy('');
     }
   }
+
+  useEffect(() => {
+    if (!visible) return undefined;
+    function onKey(event) {
+      if (event.key !== 'Delete' && event.key !== 'Backspace') return;
+      const target = event.target;
+      if (target instanceof Element) {
+        const tag = target.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable) return;
+      }
+      if (document.querySelector('.dialog')) return;
+      const host = target instanceof Element ? target.closest('.shape') : null;
+      const fromHost = host?.id?.startsWith('shape-') ? host.id.slice('shape-'.length) : '';
+      const shape = shapesRef.current.find((item) => item.id === (fromHost || selectedId));
+      if (!shape || (shape.kind !== 'rect' && shape.kind !== 'circle')) return;
+      event.preventDefault();
+      removeShape(shape);
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [visible, selectedId]);
 
   function descend(shape) {
     clearTimeout(clickTimer.current);
@@ -338,7 +364,6 @@ export default function StageEditor({ projectId, parentId, visible }) {
       if (Math.hypot(ev.clientX - start.x, ev.clientY - start.y) > 4) moved = true;
       latest = canResize ? resizeShape(origin, handle, dx, dy) : moveShape(origin, dx, dy);
       setDraft(latest);
-      setDraftBad(hitsAny(latest, shapesRef.current));
     }
 
     function up() {
@@ -346,14 +371,7 @@ export default function StageEditor({ projectId, parentId, visible }) {
       window.removeEventListener('pointerup', up);
       if (!moved) {
         setDraft(null);
-        setDraftBad(false);
         selectShape(shape, shapeNode);
-        return;
-      }
-      if (hitsAny(latest, shapesRef.current)) {
-        setDraft(null);
-        setDraftBad(false);
-        showError('That overlaps another shape.');
         return;
       }
       const sizeLocked = Boolean(shape.saved || shape.geometry_locked);
@@ -369,7 +387,6 @@ export default function StageEditor({ projectId, parentId, visible }) {
         .catch((err) => showError(err.message))
         .finally(() => {
           setDraft(null);
-          setDraftBad(false);
           busyRef.current = '';
           setBusy('');
         });
@@ -463,7 +480,6 @@ export default function StageEditor({ projectId, parentId, visible }) {
                     shape.kind === 'circle' && 'is-circle',
                     selected && 'is-selected',
                     shape.saved && 'is-saved',
-                    draftBad && draft?.id === shape.id && 'is-bad',
                   )}
                   role={shape.saved ? 'button' : 'group'}
                   tabIndex={0}

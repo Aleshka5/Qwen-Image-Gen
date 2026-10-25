@@ -54,7 +54,7 @@ Vite and React, built into `app/static/ui` and served by the same Flask process.
 
 Both sidebars are overlays, including at 390px. The right sidebar is the feed, an empty object column, or the variant list.
 
-The editor draws rectangles (and "use entire frame") on the photo. Zoom and pan keep shapes in image coordinates. The overlap test is the same polygon test as `frontend/src/geometry.js`. After confirm-and-save the level accepts delete and move, not a new shape and not a resize. Circles exist only on level 2. Double-click or Edit goes down. A single click on a saved shape opens a context menu. Switching photo/text keeps one variant history. Text is not editable yet.
+The editor draws rectangles (and "use entire frame") on the photo. Zoom and pan keep shapes in image coordinates. Parts may overlap while they are placed or moved. Confirm-and-save runs the same polygon test as `frontend/src/geometry.js` and refuses the level while any parts overlap. After confirm-and-save the level accepts delete and move, not a new shape and not a resize. Delete or Backspace removes the selected rectangle or circle. Circles exist only on level 2. Double-click or Edit goes down. A single click on a saved shape opens a context menu. Switching photo/text keeps one variant history. Text is not editable yet.
 
 Generation always sends the original crop. The selected variant is shown at the current level and in the final render only.
 
