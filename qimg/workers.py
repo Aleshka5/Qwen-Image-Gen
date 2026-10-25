@@ -12,9 +12,9 @@ from PIL import Image
 
 from app.config import settings
 
+from . import providers
 from .errors import AppError
 from .pictures import circle_mask, png_bytes
-from . import providers
 
 log = logging.getLogger(__name__)
 
@@ -24,11 +24,17 @@ def handle_intake(runtime, body: dict) -> None:
     if task is None or task.get("status") != "queued":
         return
     artifacts = sorted(task.get("artifacts") or [], key=lambda item: item["position"])
-    runtime.queue.publish("gen", {
-        "task_id": task["id"],
-        "type": task.get("type") or "gen",
-        "artifacts": artifacts,
-    })
+    try:
+        runtime.queue.publish("gen", {
+            "task_id": task["id"],
+            "type": task.get("type") or "gen",
+            "artifacts": artifacts,
+        })
+    except Exception:
+        # The delivery is nacked without requeue by serve(), so a task left "queued"
+        # here would never come back: record the failure where the browser can see it.
+        log.exception("task %s could not reach the gen queue", task["id"])
+        runtime.store.update("tasks", task["id"], status="failed", error="Queue rejected the task")
 
 
 def handle_gen(runtime, body: dict) -> None:
@@ -101,10 +107,34 @@ def drain(runtime, queues=("intake", "gen"), limit: int = 100) -> int:
     return handled
 
 
-def serve(queue_name: str, handler) -> None:
+def fail_orphans(runtime) -> int:
+    """Fail tasks a previous orchestrator left in ``running``.
+
+    A restart drops the AMQP connection; RabbitMQ redelivers the message and the new
+    worker sees status ``running`` and skips it, so the task would sit in ``running``
+    forever with no error. One orchestrator serves the gen queue (ADR 0013), therefore
+    anything still running at startup belongs to a dead process.
+    """
+    rows = runtime.store.query("tasks", status="running")
+    for task in rows:
+        runtime.store.update(
+            "tasks", task["id"], status="failed",
+            error="Orchestrator restarted while the task was running",
+        )
+    if rows:
+        log.warning("failed %s task(s) left running by the previous process", len(rows))
+    return len(rows)
+
+
+def serve(queue_name: str, handler, recover=None) -> None:
     from .runtime import build_runtime
 
     runtime = build_runtime()
+    if recover is not None:
+        try:
+            recover(runtime)
+        except Exception:
+            log.exception("startup recovery failed")
     log.info("listening on %s", queue_name)
     while True:
         try:

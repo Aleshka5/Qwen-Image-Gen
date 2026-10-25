@@ -10,7 +10,7 @@ browser ──► Auth Gateway ──► qwen-image (gunicorn, this image)
                                  │
                                  ▼
                            qimg-orchestrator ──► qwen-inference :8010  (SSE)
-                                              └► Wan or Higgsfield HTTPS
+                                              └► Wan, OpenRouter, or Higgsfield HTTPS
                                  │
                                  ▼
                            Mongo status + MinIO result
@@ -62,7 +62,7 @@ Generation always sends the original crop. The selected variant is shown at the 
 
 Local Qwen is kind `qwen`, id `local`. The worker calls `InferenceClient.generate(..., on_progress)`. Legacy `N/M` log lines become stages 4–8 named `denoise`. A future `event: progress` is stored as stage/total/name. External calls do not report stages.
 
-Wan and Higgsfield are called from `qimg/providers.py`. Authorization headers are built there, not in `app/`. Wan receives JPEG base64. Higgsfield receives a file uploaded to its own storage, then a `public_url`, because MinIO is private. Mask fill on those models is the mask image plus a prompt hint. The hard circle mask is applied to the returned image, for every provider.
+Wan, OpenRouter, and Higgsfield are called from `qimg/providers.py`. Authorization headers are built there, not in `app/`. Wan receives JPEG base64. Higgsfield receives a file uploaded to its own storage, then a `public_url`, because MinIO is private. OpenRouter has no images endpoint: the request is `POST /api/v1/chat/completions` with `modalities: ["image", "text"]`, the crop and the mask travel as base64 `image_url` parts, and the picture comes back as a base64 data URL in `choices[0].message.images`. Gemini models also accept `image_config.aspect_ratio`, so the requested frame picks the closest documented ratio; other models are resized after the fact like every external answer. Mask fill on those models is the mask image plus a prompt hint. The hard circle mask is applied to the returned image, for every provider.
 
 If the project is gone when the result comes back, the worker deletes the blob it just wrote and marks the task `invalidated`.
 

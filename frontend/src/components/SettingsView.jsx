@@ -341,6 +341,7 @@ function fieldsFor(entry) {
   const raw = entry?.fields || [];
   if (raw.length) return raw;
   if (entry?.kind === 'wan') return ['api_key', 'region', 'workspace_id'];
+  if (entry?.kind === 'openrouter') return ['api_key'];
   if (entry?.kind === 'higgsfield') return ['key_id', 'key_secret'];
   return [];
 }

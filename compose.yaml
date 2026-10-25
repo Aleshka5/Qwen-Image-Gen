@@ -14,6 +14,10 @@
 #   models_network        name qwen-inference (web and orchestrator only)
 #   common_network        mongo, minio, rabbit. Without this network those names do not resolve.
 #                         Hostname redis on the auth network is rejected_cache; do not use it.
+#
+# The backend trio (MONGO_URL, RABBIT_URL, MINIO_ENDPOINT) and the MinIO credentials
+# come from .env, never from `environment:` here. qimg.runtime refuses a partial trio,
+# so overriding one of the three in this file would make every process exit at start.
 
 services:
   qwen-image:
@@ -33,10 +37,6 @@ services:
       - common_network
     environment:
       INFERENCE_URL: http://qwen-inference:8010
-      MONGO_DB: qimg
-      MINIO_ENDPOINT: minio:9000
-      MINIO_BUCKET: qimg-images
-      MINIO_SECURE: "false"
 
   qimg-processor:
     image: localhost/qwen-image-service:latest
@@ -51,9 +51,6 @@ services:
       - common_network
     environment:
       MONGO_DB: qimg
-      MINIO_ENDPOINT: minio:9000
-      MINIO_BUCKET: qimg-images
-      MINIO_SECURE: "false"
 
   qimg-orchestrator:
     image: localhost/qwen-image-service:latest
@@ -70,9 +67,6 @@ services:
     environment:
       INFERENCE_URL: http://qwen-inference:8010
       MONGO_DB: qimg
-      MINIO_ENDPOINT: minio:9000
-      MINIO_BUCKET: qimg-images
-      MINIO_SECURE: "false"
 
 networks:
   deploy_auth_network:

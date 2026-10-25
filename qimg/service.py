@@ -89,8 +89,8 @@ class Service:
     def create_provider(self, user: str, body: dict) -> dict:
         doc = self._ensure_settings(user)
         kind = body.get("kind")
-        if kind not in {"wan", "higgsfield"}:
-            raise AppError("Add Wan or Higgsfield. Local Qwen is already available.")
+        if kind not in {"wan", "openrouter", "higgsfield"}:
+            raise AppError("Add Wan, OpenRouter, or Higgsfield. Local Qwen is already available.")
         provider = self._provider_from_body(kind, body, current=None)
         provider["id"] = _new_id()
         if body.get("is_default"):
@@ -519,7 +519,15 @@ class Service:
             "workspace_id": "",
         }
         doc = {"id": user, "user_id": user, "providers": [local]}
-        self.rt.store.insert("settings", doc)
+        try:
+            self.rt.store.insert("settings", doc)
+        except Exception:
+            # Two requests can both see "no settings" for a brand-new user. The loser
+            # of the insert race must read the winner's document, not answer 500.
+            existing = self.rt.store.get("settings", user)
+            if existing is None:
+                raise
+            return existing
         return doc
 
     def _provider_from_body(self, kind: str, body: dict, current: dict | None) -> dict:
@@ -551,6 +559,13 @@ class Service:
                 raise AppError("Choose a Wan region")
             if not str(provider["workspace_id"]).strip():
                 raise AppError("Enter the Wan workspace id")
+        elif kind == "openrouter":
+            api_key = (body.get("api_key") or "").strip()
+            if api_key:
+                provider["secret_enc"] = self._seal(api_key)
+                provider["key_hint"] = hint(api_key)
+            elif not provider["secret_enc"]:
+                raise AppError("Enter the OpenRouter API key")
         elif kind == "higgsfield":
             key_id = (body.get("key_id") or "").strip()
             key_secret = (body.get("key_secret") or "").strip()

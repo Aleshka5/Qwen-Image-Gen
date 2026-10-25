@@ -9,7 +9,9 @@ from dataclasses import replace
 from PIL import Image
 
 from app.config import settings
-from qimg.runtime import build_runtime
+from qimg.runtime import Runtime, build_runtime
+from qimg.service import Service
+from qimg.store import MemoryBlobs, MemoryQueue, MemoryStore
 from qimg.workers import drain
 
 USER = "11111111-1111-4111-8111-111111111111"
@@ -376,3 +378,24 @@ def _crop_size(app, project_id: str, shape_id: str) -> tuple[int, int]:
     image = crop_box(load_png(service._blob(project["source_key"])), absolute_box(shape, shapes))
     return image.size
 
+
+class _RacingStore(MemoryStore):
+    """First insert for a brand-new user loses to a concurrent writer."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._raced = False
+
+    def insert(self, collection: str, doc: dict) -> dict:
+        if collection == "settings" and not self._raced:
+            self._raced = True
+            super().insert(collection, doc)
+            raise RuntimeError("E11000 duplicate key")
+        return super().insert(collection, doc)
+
+
+def test_settings_insert_race_reads_the_winner():
+    runtime = Runtime(_RacingStore(), MemoryBlobs(), MemoryQueue())
+    service = Service(runtime)
+
+    assert [item["id"] for item in service.get_settings("new-user")["providers"]] == ["local"]

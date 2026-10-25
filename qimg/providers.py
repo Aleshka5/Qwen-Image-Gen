@@ -1,4 +1,4 @@
-"""Call local Qwen, Wan, or Higgsfield. External calls have no step stream."""
+"""Call local Qwen, Wan, Higgsfield, or OpenRouter. External calls have no step stream."""
 
 from __future__ import annotations
 
@@ -17,6 +17,17 @@ from .errors import AppError
 
 _OPEN = urlopen
 
+# Higgsfield takes seven ratios; OpenRouter's image_config documents ten (aspect list in
+# docs/features/multimodal/image-generation). The closest one wins.
+_HIGGS_RATIOS = {
+    "1:1": 1, "4:3": 4 / 3, "3:4": 3 / 4, "3:2": 3 / 2, "2:3": 2 / 3,
+    "16:9": 16 / 9, "9:16": 9 / 16,
+}
+_OPENROUTER_RATIOS = {
+    "1:1": 1, "2:3": 2 / 3, "3:2": 3 / 2, "3:4": 3 / 4, "4:3": 4 / 3,
+    "4:5": 4 / 5, "5:4": 5 / 4, "9:16": 9 / 16, "16:9": 16 / 9, "21:9": 21 / 9,
+}
+
 
 def run(task: dict, images: list[tuple[str, Image.Image]], on_progress, provider: dict, secret: str):
     spec = model_spec(provider["kind"], task["model"])
@@ -29,6 +40,8 @@ def run(task: dict, images: list[tuple[str, Image.Image]], on_progress, provider
         return _qwen(task, images, on_progress)
     if kind == "wan":
         return _wan(task, images, provider, spec, secret)
+    if kind == "openrouter":
+        return _openrouter(task, images, provider, spec, secret)
     if kind == "higgsfield":
         return _higgsfield(task, images, provider, spec, secret)
     raise AppError(f"Unknown provider {kind}")
@@ -200,12 +213,77 @@ def _poll_higgs(url, headers) -> dict:
     raise AppError("Higgsfield timed out", 504)
 
 
-def _aspect(width: int, height: int) -> str:
-    ratio = width / max(height, 1)
-    choices = {
-        "1:1": 1, "4:3": 4 / 3, "3:4": 3 / 4, "3:2": 3 / 2, "2:3": 2 / 3,
-        "16:9": 16 / 9, "9:16": 9 / 16,
+def _openrouter(task, images, provider, spec, secret):
+    """OpenRouter serves image models through chat completions, not an images endpoint.
+
+    The request asks for both modalities and the pictures come back as base64 data URLs
+    in ``choices[0].message.images``. ``image_config`` is a Gemini hint only, so just the
+    models flagged ``aspect`` receive it. The frame size this service asks for is applied
+    by resizing the answer, the same way every external provider is treated.
+    """
+    token = open_secret(secret, provider["secret_enc"])
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+        "X-Title": "Qwen-Image Service",
     }
+    prompt = task["prompt"]
+    if task["mode"] == "mask_fill":
+        prompt = prompt + " Change only the white area of the mask. Keep the rest."
+    content = [{"type": "text", "text": prompt}]
+    for _role, image in images[: spec["max_images"]]:
+        encoded = f"data:image/jpeg;base64,{_jpeg_b64(image)}"
+        content.append({"type": "image_url", "image_url": {"url": encoded}})
+    body = {
+        "model": task["model"],
+        "messages": [{"role": "user", "content": content}],
+        "modalities": ["image", "text"],
+    }
+    if spec.get("aspect"):
+        body["image_config"] = {
+            "aspect_ratio": _openrouter_aspect(int(task["width"]), int(task["height"])),
+        }
+    payload = _json("https://openrouter.ai/api/v1/chat/completions", body, headers, timeout=300)
+    urls = _openrouter_urls(payload)
+    if not urls:
+        raise AppError(f"OpenRouter returned no image: {_openrouter_reason(payload)}"[:500], 502)
+    return [_download(url) for url in urls]
+
+
+def _openrouter_urls(payload: dict) -> list[str]:
+    urls = []
+    for choice in payload.get("choices") or []:
+        message = choice.get("message") or {}
+        for picture in message.get("images") or []:
+            url = (picture.get("image_url") or {}).get("url")
+            if url:
+                urls.append(url)
+    return urls
+
+
+def _openrouter_reason(payload: dict) -> str:
+    """A 200 without pictures still carries the vendor text: moderation or a refusal."""
+    error = payload.get("error") or {}
+    if error.get("message"):
+        return str(error["message"])
+    for choice in payload.get("choices") or []:
+        content = (choice.get("message") or {}).get("content")
+        if isinstance(content, list):
+            content = " ".join(str(part.get("text") or "") for part in content if isinstance(part, dict))
+        if content:
+            return str(content)
+    return "the response carried no images"
+
+
+def _openrouter_aspect(width: int, height: int) -> str:
+    return _closest_ratio(width / max(height, 1), _OPENROUTER_RATIOS)
+
+
+def _aspect(width: int, height: int) -> str:
+    return _closest_ratio(width / max(height, 1), _HIGGS_RATIOS)
+
+
+def _closest_ratio(ratio: float, choices: dict) -> str:
     return min(choices, key=lambda key: abs(choices[key] - ratio))
 
 

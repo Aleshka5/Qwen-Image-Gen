@@ -10,6 +10,10 @@ The suite in `tests/` runs under pytest and, by default, needs no GPU, torch, di
 |---|---|
 | `tests/conftest.py` | Stub for `app.generator`, output directory, Flask client |
 | `tests/test_workspace.py` | Projects, shapes, queue, idempotency, render, secrets, on the memory store |
+| `tests/test_backends.py` | The queue's invariants without a broker: publish holds the connection lock, an intake failure fails the task, a restart fails orphaned `running` tasks |
+| `tests/test_account_header.py` | The gateway name in the header, and no name when the header is missing |
+| `tests/test_maskfill.py` | Mask pairing: the fitted photo and the nearest-neighbour mask |
+| `tests/test_openrouter.py` | OpenRouter: catalog entry, sealed key, the chat-completions body, a reply without images |
 | `tests/test_no_auth_in_app.py` | No login; identity headers are read only in `_caller` and `_account_name` |
 | `tests/test_imaging.py` | `fit_model_size` and `PhotoFrame` |
 | `tests/test_inference_app.py` | `inference/app.py` SSE contract with a fake pipeline: order of events, errors, keepalive, PNG encoding |
@@ -66,3 +70,4 @@ Thread counts are asserted only as “more than one” on the inference side: th
 - Unit tests for `inference/pipeline/offload.py` and the load paths in `inference/pipeline/generator.py` (attention, VAE tiling, parking the DiT).
 - CI. The repository has no workflow that runs pytest.
 - Image build and `podman compose config`. The network smoke is skipped until `RUN_PODMAN_TESTS=1` and a local image exist.
+- A live Mongo, MinIO, or RabbitMQ. `tests/test_backends.py` covers the queue's locking and failure rules with fakes, not the drivers.

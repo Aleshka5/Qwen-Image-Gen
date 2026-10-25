@@ -31,9 +31,18 @@ If the shared Mongo requires a user, put that user in `MONGO_URL`. Take the pass
 
 The client declares a durable topic exchange `qimg` and durable queues `qimg.intake` and `qimg.gen` on connect. A separate vhost is optional. The Rabbit user needs permission to declare those names.
 
+A fresh broker has only `guest`, and `guest` may connect from localhost only — a container cannot use it. Create the user by hand (the vhost stays `/`):
+
+```bash
+podman exec rabbitmq rabbitmqctl add_user qimg "$RABBIT_PASS"
+podman exec rabbitmq rabbitmqctl set_permissions -p / qimg ".*" ".*" ".*"
 ```
-RABBIT_URL=amqp://qimg:change-me@rabbit:5672/
+
+```bash
+RABBIT_URL=amqp://qimg:***@rabbit:5672/
 ```
+
+The exchange and both queues are declared by the client, not by this command.
 
 ## MinIO
 
@@ -57,7 +66,7 @@ Then set `MINIO_ACCESS_KEY=qimg`, `MINIO_SECRET_KEY` to that secret, `MINIO_ENDP
 
 ## Secrets for provider keys
 
-`SETTINGS_SECRET` seals Wan and Higgsfield keys before they are written. Generate one and keep it stable: changing it makes stored keys unreadable.
+`SETTINGS_SECRET` seals Wan, OpenRouter, and Higgsfield keys before they are written. Generate one and keep it stable: changing it makes stored keys unreadable.
 
 ```bash
 python -c "import secrets; print(secrets.token_urlsafe(32))"

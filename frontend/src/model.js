@@ -31,6 +31,12 @@ export const FALLBACK_CATALOG = [
     models: [],
   },
   {
+    kind: 'openrouter',
+    label: 'OpenRouter',
+    fields: ['api_key'],
+    models: [],
+  },
+  {
     kind: 'higgsfield',
     label: 'Higgsfield',
     fields: ['key_id', 'key_secret'],

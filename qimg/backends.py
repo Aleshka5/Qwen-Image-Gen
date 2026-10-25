@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-
+import threading
 
 
 class MongoStore:
@@ -82,56 +82,128 @@ class MinioBlobs:
 
 
 class RabbitQueue:
-    """One connection, two queues on the ``qimg`` topic exchange: intake and gen."""
+    """One connection, two queues on the ``qimg`` topic exchange: intake and gen.
+
+    ``pika.BlockingConnection`` is not thread-safe, and the web process shares this
+    instance across every gunicorn thread. Two concurrent ``basic_publish`` calls tear
+    the outbound frame buffer (``StreamLostError`` / ``IndexError: pop from an empty
+    deque``), and a message can be lost while the publish reports success — the task
+    then stays ``queued`` in Mongo forever. Every use of the connection holds the lock.
+
+    A connection also dies while nobody uses it: the broker closes a socket that has
+    been idle past its heartbeat timeout, and pika only learns that when the socket is
+    read. ``is_open`` therefore stays ``True`` on a socket the broker already reset, so
+    the first publish after an idle period wrote into a dead socket and surfaced as
+    ``StreamLostError: ConnectionResetError(104, 'Connection reset by peer')``. Every
+    publish now polls for that close first and repeats once on a fresh connection.
+    Delivery is at-least-once, which both handlers tolerate: they are idempotent on the
+    task id.
+    """
 
     def __init__(self, url: str) -> None:
         import pika
 
         self._params = pika.URLParameters(url)
         self._params.heartbeat = 600
-        self._connect()
+        self._connection = None
+        self._channel = None
+        self._lock = threading.RLock()
+        with self._lock:
+            self._connect()
 
     def _connect(self) -> None:
         import pika
 
-        self._connection = pika.BlockingConnection(self._params)
-        channel = self._connection.channel()
+        self._drop()
+        connection = pika.BlockingConnection(self._params)
+        self._connection = connection
+        channel = connection.channel()
         channel.exchange_declare("qimg", exchange_type="topic", durable=True)
         for name in ("intake", "gen"):
             channel.queue_declare(f"qimg.{name}", durable=True)
             channel.queue_bind(f"qimg.{name}", "qimg", routing_key=name)
         self._channel = channel
 
-    def publish(self, name: str, body: dict) -> None:
-        import pika
+    def _drop(self) -> None:
+        """Forget the current connection, closing it best-effort."""
+        connection, channel = self._connection, self._channel
+        self._connection = self._channel = None
+        for closer in (channel, connection):
+            close = getattr(closer, "close", None)
+            if close is None:
+                continue
+            try:
+                close()
+            except Exception:
+                pass
 
-        self._ensure()
-        self._channel.basic_publish(
-            "qimg",
-            name,
-            json.dumps(body).encode("utf-8"),
-            properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
+    def _alive(self) -> bool:
+        return bool(
+            self._connection is not None
+            and self._channel is not None
+            and self._connection.is_open
+            and self._channel.is_open
         )
 
+    def publish(self, name: str, body: dict) -> None:
+        import pika
+        import pika.exceptions
+
+        payload = json.dumps(body).encode("utf-8")
+        with self._lock:
+            for attempt in (1, 2):
+                try:
+                    self._ensure().basic_publish(
+                        "qimg",
+                        name,
+                        payload,
+                        properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
+                    )
+                    return
+                except (pika.exceptions.AMQPError, OSError):
+                    if attempt == 2:
+                        raise
+                    self._drop()
+
     def pull(self, name: str):
-        self._ensure()
-        method, _props, body = self._channel.basic_get(f"qimg.{name}", auto_ack=False)
-        if method is None:
-            return None
-        payload = json.loads(body.decode("utf-8"))
+        with self._lock:
+            method, _props, body = self._ensure().basic_get(f"qimg.{name}", auto_ack=False)
+            if method is None:
+                return None
+            payload = json.loads((body or b"{}").decode("utf-8"))
+            tag = method.delivery_tag
 
         def ack() -> None:
-            self._channel.basic_ack(method.delivery_tag)
+            with self._lock:
+                self._ensure().basic_ack(tag)
 
         def nack() -> None:
-            self._channel.basic_nack(method.delivery_tag, requeue=False)
+            with self._lock:
+                self._ensure().basic_nack(tag, requeue=False)
 
         return _Delivery(payload, ack, nack)
 
-    def _ensure(self) -> None:
-        if self._connection.is_open and self._channel.is_open:
-            return
-        self._connect()
+    def _ensure(self):
+        """Return an open channel, reconnecting when the socket is dead.
+
+        ``is_open`` alone is not a liveness check: pika learns about a broker-side
+        close only when the socket is read, so an idle-timed-out connection still
+        claims to be open and the next ``basic_publish`` is what fails.
+        """
+        connection = self._connection
+        if connection is None or not self._alive():
+            self._connect()
+        else:
+            try:
+                connection.process_data_events(time_limit=0)
+            except Exception:
+                self._connect()
+            else:
+                if not self._alive():
+                    self._connect()
+        if self._channel is None:
+            raise RuntimeError("queue connection is not open")
+        return self._channel
 
 
 class _Delivery:

@@ -2,7 +2,7 @@
 
 A project workspace in front of [Qwen/Qwen-Image-2.1](https://huggingface.co/Qwen/Qwen-Image-2.1),
 built for a **Tesla V100 32 GB**. The page is one address. Generation is a queued task.
-Local Qwen, Wan, and Higgsfield can run it. The model process is still a separate project.
+Local Qwen, Wan, OpenRouter, and Higgsfield can run it. The model process is still a separate project.
 
 ```
 browser ──► Auth Gateway ──► qwen-image       Flask, the workspace UI, JSON API
@@ -236,7 +236,7 @@ The page is `GET /`. Old form URLs are gone. Field-by-field detail is [docs/api-
 | `GET` | `/api/catalog` | Provider kinds and models |
 | `GET` | `/api/settings` | The caller's providers, secrets redacted |
 | `GET`/`POST` | `/api/projects` | List, or upload a photo / start from scratch |
-| `POST` | `/api/generations` | Queue one batch. Identical inputs return the open batch |
+| `POST` | `/api/generations` | Queue one batch. Identical inputs return the existing batch |
 | `GET` | `/api/tasks/:id` | Status. Local jobs include `progress.stage` / `total` |
 | `POST` | `/api/renders` | Composite selected variants onto the original |
 | `GET` | `/api/media/<key>` | A PNG the caller owns |

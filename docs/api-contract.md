@@ -23,12 +23,12 @@ Unless a row says otherwise, success JSON is the resource itself or a list wrapp
 | Method | Path | Body |
 |---|---|---|
 | `GET` | `/api/settings` | `{providers: [...]}` |
-| `POST` | `/api/settings/providers` | kind `wan` or `higgsfield`, plus the fields below |
+| `POST` | `/api/settings/providers` | kind `wan`, `openrouter`, or `higgsfield`, plus the fields below |
 | `PATCH` | `/api/settings/providers/:id` | same fields; blank secrets are left unchanged |
 | `DELETE` | `/api/settings/providers/:id` | Local Qwen cannot be deleted |
 | `POST` | `/api/settings/providers/:id/default` | no body |
 
-Local Qwen is always present with id `local` and kind `qwen`. Wan needs `api_key`, `region` (`singapore`, `virginia`, `beijing`, `frankfurt`), and `workspace_id`. Higgsfield needs `key_id` and `key_secret`. A stored key comes back only as `key_hint` (the last four characters). `secret_enc` is never returned. An empty `SETTINGS_SECRET` rejects the write.
+Local Qwen is always present with id `local` and kind `qwen`. Wan needs `api_key`, `region` (`singapore`, `virginia`, `beijing`, `frankfurt`), and `workspace_id`. OpenRouter needs only `api_key`. Higgsfield needs `key_id` and `key_secret`. A stored key comes back only as `key_hint` (the last four characters). `secret_enc` is never returned. An empty `SETTINGS_SECRET` rejects the write. `models` is filtered against `GET /api/catalog`; an id the catalog does not know is dropped, and an empty list means every model of that kind.
 
 ## Projects and shapes
 
@@ -117,7 +117,7 @@ Artifact order stored with the task: `source` (the original crop, never a select
 }
 ```
 
-`provider_kind` is `qwen`, `wan`, or `higgsfield`. Local jobs include `progress`. External jobs send `progress: null` and the UI shows the status word. Status `invalidated` means the project or the object was deleted before the result could be kept. Other statuses the UI understands are `queued`, `running`, `done`, and `failed`.
+`provider_kind` is `qwen`, `wan`, `openrouter`, or `higgsfield`. Local jobs include `progress`. External jobs send `progress: null` and the UI shows the status word. Status `invalidated` means the project or the object was deleted before the result could be kept. Other statuses the UI understands are `queued`, `running`, `done`, and `failed`.
 
 `POST /api/renders` with `{scope: "project"|"shape", project_id, shape_id}` returns `{url}`. The composite pastes selected **generated** variants onto the original photo. A circle is a hard alpha mask after the model returns. A scratch render returns the selected generated variant, or the latest one.
 
