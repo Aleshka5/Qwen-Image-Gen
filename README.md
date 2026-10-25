@@ -241,7 +241,7 @@ The page is `GET /`. Old form URLs are gone. Field-by-field detail is [docs/api-
 | `POST` | `/api/renders` | Composite selected variants onto the original |
 | `GET` | `/api/media/<key>` | A PNG the caller owns |
 
-`POST /v1/generate` is the internal inference contract, from the orchestrator to `http://qwen-inference:8010`, never from the gateway. The response is `text/event-stream`.
+`POST /v1/generate` is the internal inference contract, from the orchestrator to `http://qwen-inference:8010`, never from the gateway. The response is `text/event-stream`: `start`, `progress`, `log`, then `done` or `error`. [Change request 0001](docs/change-requests/0001-inference-progress-events.md) is implemented.
 
 ---
 

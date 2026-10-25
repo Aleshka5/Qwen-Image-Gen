@@ -27,6 +27,7 @@ import torch
 from PIL import Image
 
 from ..config import settings
+from ..logstream import progress
 from .offload import CpuHostedTextEncoder
 from .types import GenerationRequest, GenerationResult, PipelineError
 
@@ -106,6 +107,8 @@ def _instrument(obj: Any, name: str, label: str) -> None:
         # Кэш аллокатора после денойза дырявый: большой fp32-тензор decode в него не встаёт.
         if label == "vae.decode":
             _free_memory()
+            # Стадия 9 — VAE decode. Раньше денойза сюда не попасть.
+            progress(9, "decode")
         started = time.monotonic()
         detail = _call_detail(name, args, kwargs)
         log.info("pipeline «%s»: start%s", label, detail)
@@ -529,6 +532,8 @@ class QwenImageGenerator:
             log.info("pipeline input image%d: %dx%d %s", index, image.width, image.height, image.mode)
 
         with self._gpu_lock:
+            # Стадия 2 — входы декодированы и по размеру; карта наша.
+            progress(2, "prepare")
             self._seen_caches.clear()
             self._deferred_parked.clear()
             generator = torch.Generator(device="cpu").manual_seed(request.seed)
@@ -543,6 +548,9 @@ class QwenImageGenerator:
             output = None
             peak = 0.0
             try:
+                # Стадия 3 — conditioning (текст + референсы) и VAE encode: первое, что
+                # делает пайплайн. Шаги денойза сами сообщат стадии 4–8.
+                progress(3, "encode")
                 output = self._invoke_pipeline(pipe, call_kwargs)
                 if torch.cuda.is_available():
                     peak = torch.cuda.max_memory_allocated() / 2**30
@@ -596,6 +604,10 @@ class QwenImageGenerator:
             now - self._gen_mark,
             _vram_note(),
         )
+        # Стадии 4–8: шаги денойза раскладываются на четыре равные четверти.
+        step = step_index + 1
+        total = max(1, int(self._step_total))
+        progress(4 + min(4, int(step / total * 4)), "denoise")
         return callback_kwargs
 
 

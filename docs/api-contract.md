@@ -117,7 +117,7 @@ Artifact order stored with the task: `source` (the original crop, never a select
 }
 ```
 
-`provider_kind` is `qwen`, `wan`, `openrouter`, or `higgsfield`. Local jobs include `progress`. External jobs send `progress: null` and the UI shows the status word. Status `invalidated` means the project or the object was deleted before the result could be kept. Other statuses the UI understands are `queued`, `running`, `done`, and `failed`.
+`provider_kind` is `qwen`, `wan`, `openrouter`, or `higgsfield`. Local jobs include `progress` — `{stage, total: 10, name}` taken from the inference `progress` event, where stage 1 is `start`, 2 `prepare`, 3 `encode`, 4–8 `denoise`, 9 `decode`, 10 `done`. External jobs send `progress: null` and the UI shows the status word. Status `invalidated` means the project or the object was deleted before the result could be kept. Other statuses the UI understands are `queued`, `running`, `done`, and `failed`.
 
 `POST /api/renders` with `{scope: "project"|"shape", project_id, shape_id}` returns `{url}`. The composite pastes selected **generated** variants onto the original photo. A circle is a hard alpha mask after the model returns. A scratch render returns the selected generated variant, or the latest one.
 
@@ -125,4 +125,4 @@ Artifact order stored with the task: `source` (the original crop, never a select
 
 ## Internal inference
 
-Unchanged, and not exposed to the gateway: `POST http://qwen-inference:8010/v1/generate` → `text/event-stream`. See [inference_api.md](inference_api.md) and [change request 0001](change-requests/0001-inference-progress-events.md).
+Not exposed to the gateway: `POST http://qwen-inference:8010/v1/generate` → `text/event-stream`, carrying `start`, `progress`, `log`, then `done` or `error`. See [inference_api.md](inference_api.md) and [change request 0001](change-requests/0001-inference-progress-events.md).

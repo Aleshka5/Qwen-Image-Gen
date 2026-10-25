@@ -238,27 +238,48 @@ class InferenceClient:
         seed = request.seed
         duration: float | None = None
         payloads: list[str] = []
+        real_progress = False
+        last_stage: int | None = None
+
+        def emit(payload: dict) -> None:
+            """Отдаёт стадию в задачу. Повтор той же стадии не пишется.
+
+            Денойз присылает событие на каждый шаг, а стадий всего четыре на сорок
+            шагов: без этой проверки задача получала бы сорок одинаковых записей.
+            """
+            nonlocal last_stage
+            if on_progress is None:
+                return
+            stage = int(payload.get("stage") or 0)
+            if stage == last_stage:
+                return
+            last_stage = stage
+            on_progress(payload)
+
         with response:
             try:
                 for event, data in _events(response):
                     if event == "log":
                         entry = json.loads(data)
                         live_logs().push(str(entry.get("level") or "INFO"), str(entry.get("message") or ""))
-                        if on_progress is not None:
+                        # Пока сервер не присылает progress, стадии выковыриваются из
+                        # строки «pipeline «denoise» N/M». Как только он их присылает,
+                        # разбор логов выключается: иначе каждый шаг идёт дважды.
+                        if not real_progress:
                             mapped = _legacy_progress(str(entry.get("message") or ""))
                             if mapped:
-                                on_progress(mapped)
-                    elif event == "progress" and on_progress is not None:
-                        on_progress(json.loads(data))
-                    elif event == "start" and on_progress is not None:
-                        on_progress({"stage": 1, "total": 10, "name": "start"})
+                                emit(mapped)
+                    elif event == "progress":
+                        real_progress = True
+                        emit(json.loads(data))
+                    elif event == "start":
+                        emit({"stage": 1, "total": 10, "name": "start"})
                     elif event == "done":
                         done = json.loads(data)
                         seed = int(done.get("seed", request.seed))
                         duration = float(done.get("duration") or 0.0)
                         payloads = list(done.get("images") or [])
-                        if on_progress is not None:
-                            on_progress({"stage": 10, "total": 10, "name": "done"})
+                        emit({"stage": 10, "total": 10, "name": "done"})
                     elif event == "error":
                         failure = json.loads(data)
                         raise PipelineError(

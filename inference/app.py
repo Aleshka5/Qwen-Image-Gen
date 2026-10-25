@@ -3,6 +3,7 @@
 Ответ на генерацию — поток событий:
 
     event: start   {"model": "...", "memory_mode": "offload"}
+    event: progress {"stage": 2, "total": 10, "name": "prepare"}
     event: log     {"level": "INFO", "message": "pipeline «denoise» 3/4: ..."}
     ...
     event: done    {"seed": 7, "duration": 4.2, "count": 1, "images": ["<base64 PNG>"]}
@@ -31,7 +32,7 @@ from flask import Flask, Response, jsonify, request
 from PIL import Image, UnidentifiedImageError
 
 from .config import settings
-from .logstream import STOP, LogStream, bind, install_handler
+from .logstream import STAGES, STOP, LogStream, Progress, bind, install_handler
 from .pipeline.types import GenerationRequest, GenerationResult, PipelineError
 
 log = logging.getLogger(__name__)
@@ -151,6 +152,8 @@ def _stream(get_generator: Callable[[], Any], generation: GenerationRequest) -> 
             len(generation.images),
         )
         yield _event("start", {"model": settings.model_id, "memory_mode": settings.memory_mode})
+        # Стадия 1 — запрос принят; стадию 10 отдаём вместе с done.
+        yield _event("progress", {"stage": 1, "total": STAGES, "name": "start"})
 
         # Контекст копируется внутри bind: логи потока генерации попадут в тот же
         # LogStream, без глобального реестра «чей сейчас запрос».
@@ -165,6 +168,9 @@ def _stream(get_generator: Callable[[], Any], generation: GenerationRequest) -> 
                     continue
                 if item is STOP:
                     break
+                if isinstance(item, Progress):
+                    yield _event("progress", item.payload())
+                    continue
                 level, message = item  # type: ignore[misc]
                 yield _event("log", {"level": level, "message": message})
             worker.join(timeout=5.0)
@@ -182,6 +188,7 @@ def _stream(get_generator: Callable[[], Any], generation: GenerationRequest) -> 
         yield _event("error", {"kind": "internal", "error": "генерация не вернула результат"})
         return
     images = [base64.b64encode(_png_bytes(image)).decode("ascii") for image in result.images]
+    yield _event("progress", {"stage": 10, "total": STAGES, "name": "done"})
     yield _event(
         "done",
         {

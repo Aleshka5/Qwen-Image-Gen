@@ -143,6 +143,47 @@ def test_generate_relays_pipeline_logs_and_decodes_images(server, tmp_path):
     assert ids == sorted(ids) and len(set(ids)) == len(ids)
 
 
+def test_progress_events_reach_the_task_and_disable_log_scraping(server, tmp_path):
+    server.state.events = [
+        _event("start", {"model": "Qwen/Qwen-Image-2.1", "memory_mode": "offload"}),
+        _event("progress", {"stage": 1, "total": 10, "name": "start"}),
+        _event("log", {"level": "INFO", "message": "pipeline «denoise» 1/2: timestep=1000"}),
+        _event("progress", {"stage": 2, "total": 10, "name": "prepare"}),
+        # После первого настоящего progress строки лога стадий больше не дают.
+        _event("log", {"level": "INFO", "message": "pipeline «denoise» 2/2: timestep=500"}),
+        _event("progress", {"stage": 10, "total": 10, "name": "done"}),
+        _event("done", {"seed": 7, "duration": 0.5, "count": 0, "images": []}),
+    ]
+    client = InferenceClient(base_url=server.url, timeout=10)
+    seen: list[dict] = []
+
+    client.generate(_request(tmp_path), on_progress=seen.append)
+
+    assert [(item["stage"], item["name"]) for item in seen] == [(1, "start"), (2, "prepare"), (10, "done")]
+    assert all(item["total"] == 10 for item in seen)
+
+
+def test_an_old_server_without_progress_events_still_moves_the_stage(server, tmp_path):
+    """Пока контейнер инференса не обновлён, стадии берутся из строк денойза."""
+    server.state.events = [
+        _event("start", {"model": "Qwen/Qwen-Image-2.1", "memory_mode": "offload"}),
+        _event("log", {"level": "INFO", "message": "pipeline «denoise» 1/40: timestep=1000"}),
+        _event("log", {"level": "INFO", "message": "pipeline «denoise» 40/40: timestep=10"}),
+        _event("done", {"seed": 7, "duration": 0.5, "count": 0, "images": []}),
+    ]
+    client = InferenceClient(base_url=server.url, timeout=10)
+    seen: list[dict] = []
+
+    client.generate(_request(tmp_path), on_progress=seen.append)
+
+    assert [(item["stage"], item["name"]) for item in seen] == [
+        (1, "start"),
+        (4, "denoise"),
+        (8, "denoise"),
+        (10, "done"),
+    ]
+
+
 def test_generate_sends_multipart_with_the_uploaded_images(server, tmp_path):
     server.state.events = [_event("done", {"seed": 7, "duration": 0.5, "count": 0, "images": []})]
     client = InferenceClient(base_url=server.url, timeout=10)

@@ -17,7 +17,8 @@ import contextlib
 import contextvars
 import logging
 import queue
-from typing import Iterator
+from dataclasses import dataclass
+from typing import Any, Iterator
 
 #: Префикс имён логгеров, которые уезжают клиенту.
 PREFIX = "inference"
@@ -26,6 +27,21 @@ PREFIX = "inference"
 STOP = object()
 
 _sink: contextvars.ContextVar["LogStream | None"] = contextvars.ContextVar("qwen_log_sink", default=None)
+
+#: Всего стадий в шкале прогресса (см. docs/change-requests/0001-inference-progress-events.md).
+STAGES = 10
+
+
+@dataclass(frozen=True, slots=True)
+class Progress:
+    """Стадия пайплайна в той же очереди, что и логи: ``event: progress``."""
+
+    stage: int
+    name: str
+    total: int = STAGES
+
+    def payload(self) -> dict[str, Any]:
+        return {"stage": self.stage, "total": self.total, "name": self.name}
 
 
 class LogStream:
@@ -38,6 +54,10 @@ class LogStream:
     def offer(self, level: str, message: str) -> None:
         if not self._closed:
             self._queue.put((level, message))
+
+    def offer_progress(self, stage: int, name: str, total: int = STAGES) -> None:
+        if not self._closed:
+            self._queue.put(Progress(stage=int(stage), name=str(name), total=int(total)))
 
     def take(self, timeout: float | None = None) -> object:
         """Следующая запись, :data:`STOP`, либо ``None`` по таймауту (для keepalive)."""
@@ -60,6 +80,19 @@ def bind(stream: LogStream) -> Iterator[LogStream]:
         yield stream
     finally:
         _sink.reset(token)
+
+
+def progress(stage: int, name: str, total: int = STAGES) -> dict[str, Any] | None:
+    """Кладёт стадию в поток запроса. Без потока (тест, CLI, прогрев) — тишина.
+
+    Возвращает отправленный словарь, чтобы вызывающий мог проверить шкалу
+    без разбора очереди.
+    """
+    payload = {"stage": int(stage), "total": int(total), "name": str(name)}
+    stream = _sink.get()
+    if stream is not None:
+        stream.offer_progress(payload["stage"], payload["name"], payload["total"])
+    return payload
 
 
 class StreamHandler(logging.Handler):

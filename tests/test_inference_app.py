@@ -17,6 +17,7 @@ import pytest
 from PIL import Image
 
 from inference.app import create_app
+from inference.logstream import progress as progress_from_pipeline
 from inference.pipeline.types import GenerationResult, PipelineError
 
 
@@ -125,6 +126,47 @@ def test_generate_streams_start_logs_then_done(client, pipeline):
     assert (request.width, request.height, request.steps, request.true_cfg_scale) == (64, 64, 2, 1.0)
 
 
+def test_progress_events_walk_the_stage_scale():
+    """Сервер сам сообщает стадии 1–10: клиенту больше не нужно разбирать логи."""
+
+    class ProgressPipeline(FakePipeline):
+        def generate(self, request):
+            stages = [(2, "prepare"), (3, "encode")]
+            stages += [(stage, "denoise") for stage in range(4, 9)]
+            stages += [(9, "decode")]
+            for stage, name in stages:
+                progress_from_pipeline(stage, name)
+            return super().generate(request)
+
+    app = create_app(generator_factory=lambda: ProgressPipeline())
+    events = _events(app.test_client().post("/v1/generate", data=_form()).get_data(as_text=True))
+
+    names = [name for name, _ in events]
+    assert names[0] == "start" and names[-1] == "done"
+    # Стадия 10 приходит до done: она сообщает, что байты PNG готовы.
+    assert names[-2] == "progress"
+
+    stages = [(payload["stage"], payload["name"]) for name, payload in events if name == "progress"]
+    assert stages == [
+        (1, "start"),
+        (2, "prepare"),
+        (3, "encode"),
+        (4, "denoise"),
+        (5, "denoise"),
+        (6, "denoise"),
+        (7, "denoise"),
+        (8, "denoise"),
+        (9, "decode"),
+        (10, "done"),
+    ]
+    assert {payload["total"] for name, payload in events if name == "progress"} == {10}
+
+
+def test_progress_without_a_bound_stream_is_silent():
+    """CLI, прогрев и тесты пайплайна зовут progress() вне запроса."""
+    assert progress_from_pipeline(4, "denoise") == {"stage": 4, "total": 10, "name": "denoise"}
+
+
 def test_generate_passes_uploaded_images_to_the_pipeline(client, pipeline, tmp_path):
     path = tmp_path / "photo.png"
     path.write_bytes(_png((9, 12)))
@@ -149,6 +191,9 @@ def test_pipeline_failure_is_an_error_event_not_a_broken_stream():
     assert events[-1][0] == "error"
     assert events[-1][1] == {"kind": "pipeline", "error": "CUDA out of memory"}
     assert ("done",) != (events[-1][0],)
+    # Стадия 10 — только у успешного прогона, вместе с done.
+    stages = [payload["stage"] for name, payload in events if name == "progress"]
+    assert stages == [1]
 
 
 def test_unexpected_failure_is_an_internal_error_event():

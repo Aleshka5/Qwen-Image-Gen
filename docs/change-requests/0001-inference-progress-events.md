@@ -1,8 +1,10 @@
 # 0001 — Progress events on the inference stream
 
-Status: requested. The workspace already accepts the event. qwen-inference has not implemented it.
+Status: shipped in `localhost/qwen-inference:latest` (`inference/app.py`, `inference/logstream.py`,
+`inference/pipeline/generator.py`). The contract it produced is [inference_api.md](../inference_api.md#progress-stages).
 
-Audience: the inference project at `Common/models/services/inference`. This repository does not change that process.
+Audience: the inference project at `Common/models/services/inference`. That project only launches the image;
+the code is built from this repository.
 
 ## What stays
 
@@ -30,6 +32,27 @@ data: {"stage": 4, "total": 10, "name": "denoise"}
 
 `event: log` may continue for operators. The browser does not show those lines.
 
-## Until this ships
+## How it was implemented
 
-The orchestrator maps an existing denoise log line that contains `N/M` onto stages 4–8 with `name: denoise`. `event: start` becomes stage 1. `event: done` becomes stage 10. External providers (Wan, Higgsfield) have no stage numbers; the UI shows the words `queued`, `running`, `done`, and `failed`.
+`inference/logstream.py` gained a `Progress` item and a `progress(stage, name)` function: it reads the same
+`ContextVar` the log handler uses, so the pipeline needs no HTTP knowledge and no new global registry. The SSE
+generator writes `event: progress` for every `Progress` it takes off the request queue — the same queue that
+carries the log lines, which is why the events stay ordered against them.
+
+| Stage | Where the call sits |
+|---|---|
+| 1 | `inference/app.py`, right after `event: start` |
+| 2 | `generator.generate()`, first statement under the GPU lock |
+| 3 | `generator.generate()`, just before `pipe(...)` |
+| 4–8 | `generator._log_denoise_step()`, one per step, `4 + min(4, int(step / total * 4))` |
+| 9 | the instrumented `vae.decode` wrapper (`_instrument_pipeline`) |
+| 10 | `inference/app.py`, right before `event: done` |
+
+Denoise sends an event per step and the orchestrator keeps only a stage that differs from the previous one, so a
+40-step job produces ten `progress` writes on the task, not forty.
+
+## The old fallback
+
+The mapping from the `N/M` log line is still in `app/inference.py::_legacy_progress` and still runs against a
+container that predates this change. The first real `progress` event switches it off for the rest of the stream, so
+rolling the model image back needs no change on the web side.

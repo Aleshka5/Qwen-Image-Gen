@@ -64,13 +64,22 @@ The limit on the body is `MAX_UPLOAD_MB`, as on the public side.
 event: start
 data: {"model": "Qwen/Qwen-Image-2.1", "memory_mode": "offload"}
 
+event: progress
+data: {"stage": 1, "total": 10, "name": "start"}
+
 event: log
 data: {"level": "INFO", "message": "pipeline «denoise» 1/4: timestep=1000, шаг 0.92 с, с начала 0.9 с"}
 
 : keepalive
 
+event: progress
+data: {"stage": 4, "total": 10, "name": "denoise"}
+
 event: log
 data: {"level": "WARNING", "message": "полный кадр не влез в VRAM, повтор тайлами 1536 px"}
+
+event: progress
+data: {"stage": 10, "total": 10, "name": "done"}
 
 event: done
 data: {"seed": 42, "duration": 4.21, "count": 1, "images": ["iVBORw0KGgo..."]}
@@ -79,12 +88,31 @@ data: {"seed": 42, "duration": 4.21, "count": 1, "images": ["iVBORw0KGgo..."]}
 | Event | Payload | When |
 |---|---|---|
 | `start` | `model`, `memory_mode` | first event, before the pipeline is touched |
+| `progress` | `stage` (1…10), `total` (10), `name` | the pipeline entered a stage, or finished a denoise step |
 | `log` | `level`, `message` | one per logging record from `inference.*` — the same strings the monolith wrote, including `pipeline «denoise» N/M` per step |
 | `done` | `seed`, `duration`, `count`, `images[]` | the job finished; `images` are base64 PNGs in pipeline order |
 | `error` | `kind`, `error` | the job failed; `kind` is `pipeline` (out of memory, weights, model refusal) or `internal` |
 
-Ordering is strict: `start`, any number of `log`, then exactly one `done` **or** `error`.
-Nothing is sent after the terminal event, and the stream is closed.
+Ordering is strict: `start`, then any number of `progress` and `log` in the order they happened, then exactly one `done` **or** `error`. The `progress` with stage 10 always precedes `done` — it says the PNG bytes are ready. Nothing is sent after the terminal event, and the stream is closed.
+
+### Progress stages
+
+The scale is fixed at ten stages; `stage` never goes backwards and `total` is always 10.
+
+| stage | name | emitted by |
+|---|---|---|
+| 1 | `start` | the HTTP layer, right after `start` — the request has been accepted |
+| 2 | `prepare` | the generator, once it holds the GPU lock: inputs are decoded and sized |
+| 3 | `encode` | the generator, before the pipeline call: conditioning and the VAE encode |
+| 4–8 | `denoise` | one event per finished sampling step, spread over four quarters of `num_inference_steps` |
+| 9 | `decode` | the instrumented `vae.decode`, with the allocator cache already flushed |
+| 10 | `done` | the HTTP layer, immediately before `done` |
+
+A failed job has no stage 10: the stream ends with `error`, and the last stage it reported stays where the failure happened.
+
+Denoise is the only stage that repeats its number: a 40-step job sends 40 events, ten per stage 4–8. Storing every one of them is wasteful, so `qwen-image` (`app/inference.py`) drops a stage equal to the previous one and keeps `{stage, total, name}` per task. The browser sees the same ten-step scale either way.
+
+Until the model container shipped this, the orchestrator scraped `pipeline «denoise» N/M` out of the `log` events and mapped it onto stages 4–8. That fallback is still in `_legacy_progress` and is used only while a server sends no `progress` at all — the first real event switches it off, so an old image and a new one both keep the public `/api/tasks/:id` contract.
 
 ### Details that matter
 

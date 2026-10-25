@@ -16,8 +16,8 @@ The suite in `tests/` runs under pytest and, by default, needs no GPU, torch, di
 | `tests/test_openrouter.py` | OpenRouter: catalog entry, sealed key, the chat-completions body, a reply without images |
 | `tests/test_no_auth_in_app.py` | No login; identity headers are read only in `_caller` and `_account_name` |
 | `tests/test_imaging.py` | `fit_model_size` and `PhotoFrame` |
-| `tests/test_inference_app.py` | `inference/app.py` SSE contract with a fake pipeline: order of events, errors, keepalive, PNG encoding |
-| `tests/test_inference_client.py` | `app/inference.py` against a real SSE server on `127.0.0.1`: multipart out, log lines into the buffer, PNGs from `done` |
+| `tests/test_inference_app.py` | `inference/app.py` SSE contract with a fake pipeline: order of events, the `progress` stage scale, errors, keepalive, PNG encoding |
+| `tests/test_inference_client.py` | `app/inference.py` against a real SSE server on `127.0.0.1`: multipart out, log lines into the buffer, `progress` into the task, PNGs from `done`, and the log-scraping fallback for an old server |
 | `tests/test_deploy_docs.py` | No published port; web plus two workers; `common_network`; healthchecks; gunicorn |
 | `tests/test_podman_network.py` | Podman network smoke, only with `RUN_PODMAN_TESTS=1` |
 
