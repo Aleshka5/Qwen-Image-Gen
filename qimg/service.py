@@ -30,6 +30,7 @@ from .geometry import PHOTO_COLOR as PHOTO
 from .geometry import TEXT_COLOR as TEXT
 from .geometry import Box, absolute_box, clamp_box, hits_any
 from .pictures import circle_mask, crop_box, load_png, png_bytes, preview, render_tree
+from .tasks import discard_task, owner_gone
 
 _CYRILLIC = re.compile(r"[Ѐ-ӿ]")
 _SEED_MAX = 2**31 - 1
@@ -195,10 +196,7 @@ class Service:
         project = self._project(user, project_id)
         self.rt.store.update("projects", project_id, deleted_at=_now())
         for task in self.rt.store.query("tasks", project_id=project_id, user_id=user):
-            if task["status"] in {"queued", "pending"}:
-                self.rt.store.update("tasks", task["id"], status="invalidated", error="Project deleted")
-            for artifact in task.get("artifacts") or []:
-                self.rt.blobs.delete(artifact["key"])
+            discard_task(self.rt, task)
         for shape in self.rt.store.query("shapes", project_id=project_id):
             self.rt.store.update("shapes", shape["id"], deleted_at=_now())
         for variant in self.rt.store.query("variants", project_id=project_id):
@@ -285,8 +283,7 @@ class Service:
         for item in doomed:
             self.rt.store.update("shapes", item["id"], deleted_at=_now())
             for task in self.rt.store.query("tasks", shape_id=item["id"]):
-                if task["status"] in {"queued", "pending"}:
-                    self.rt.store.update("tasks", task["id"], status="invalidated", error="Object deleted")
+                discard_task(self.rt, task)
             for variant in self.rt.store.query("variants", shape_id=item["id"]):
                 if variant.get("key"):
                     self.rt.blobs.delete(variant["key"])
@@ -465,12 +462,20 @@ class Service:
         task = self.rt.store.get("tasks", task_id)
         if task is None or task["user_id"] != user:
             raise AppError("Task not found", 404)
+        if owner_gone(self.rt, task):
+            discard_task(self.rt, task)
+            raise AppError("Task not found", 404)
         return self._task_json(task)
 
     def feed(self, user: str) -> dict:
-        tasks = self.rt.store.query("tasks", user_id=user)
-        tasks.sort(key=lambda item: item["created_at"], reverse=True)
-        return {"tasks": [self._task_json(item) for item in tasks[:50]]}
+        visible = []
+        for task in self.rt.store.query("tasks", user_id=user):
+            if owner_gone(self.rt, task):
+                discard_task(self.rt, task)
+                continue
+            visible.append(task)
+        visible.sort(key=lambda item: item["created_at"], reverse=True)
+        return {"tasks": [self._task_json(item) for item in visible[:50]]}
 
     # ------------------------------------------------------------------ render
     def render(self, user: str, scope: str, project_id: str | None, shape_id: str | None) -> dict:
@@ -785,17 +790,33 @@ class Service:
 
     def _task_json(self, task: dict) -> dict:
         project = self.rt.store.get("projects", task["project_id"])
+        artifacts = sorted(task.get("artifacts") or [], key=lambda item: item.get("position", 0))
+        mask = next((item for item in artifacts if item.get("role") == "mask" and item.get("key")), None)
+        references = [
+            {"url": f"/api/media/{item['key']}"}
+            for item in artifacts
+            if item.get("role") == "reference" and item.get("key")
+        ]
         return {
             "id": task["id"],
             "status": task["status"],
             "progress": task.get("progress"),
             "mode": task["mode"],
+            "provider_id": task.get("provider_id"),
             "provider_kind": task.get("provider_kind"),
             "model": task.get("model"),
             "seed": task.get("seed"),
             "prompt": task.get("prompt") or "",
+            "negative_prompt": task.get("negative_prompt") or "",
+            "steps": task.get("steps"),
+            "true_cfg_scale": task.get("true_cfg_scale"),
+            "width": task.get("width"),
+            "height": task.get("height"),
+            "copies": task.get("copies"),
             "error": task.get("error"),
             "result_url": task.get("result_url"),
+            "mask_url": f"/api/media/{mask['key']}" if mask else None,
+            "references": references,
             "shape_id": task.get("shape_id"),
             "project_id": task["project_id"],
             "project_name": (project or {}).get("name") or "",

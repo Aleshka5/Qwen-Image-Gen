@@ -15,6 +15,7 @@ from app.config import settings
 from . import providers
 from .errors import AppError
 from .pictures import circle_mask, png_bytes
+from .tasks import discard_task, owner_gone
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ def handle_intake(runtime, body: dict) -> None:
         # The delivery is nacked without requeue by serve(), so a task left "queued"
         # here would never come back: record the failure where the browser can see it.
         log.exception("task %s could not reach the gen queue", task["id"])
-        runtime.store.update("tasks", task["id"], status="failed", error="Queue rejected the task")
+        _update_task(runtime, task["id"], status="failed", error="Queue rejected the task")
 
 
 def handle_gen(runtime, body: dict) -> None:
@@ -45,9 +46,7 @@ def handle_gen(runtime, body: dict) -> None:
     if not runtime.store.claim("tasks", task_id, "queued", status="running"):
         return
     task = runtime.store.get("tasks", task_id)
-    project = runtime.store.get("projects", task["project_id"])
-    if project is None or project.get("deleted_at"):
-        _invalidate(runtime, task, "Project deleted")
+    if task is None or _release(runtime, task):
         return
     try:
         loaded = _load(runtime, task)
@@ -57,8 +56,8 @@ def handle_gen(runtime, body: dict) -> None:
         def on_progress(payload: dict) -> None:
             if task.get("provider_kind") != "qwen":
                 return
-            runtime.store.update(
-                "tasks",
+            _update_task(
+                runtime,
                 task_id,
                 progress={
                     "stage": int(payload.get("stage") or 0),
@@ -74,15 +73,14 @@ def handle_gen(runtime, body: dict) -> None:
             provider,
             settings.settings_secret,
         )
-        project = runtime.store.get("projects", task["project_id"])
-        if project is None or project.get("deleted_at"):
-            _invalidate(runtime, task, "Project deleted")
+        current = runtime.store.get("tasks", task_id)
+        if current is None or _release(runtime, current):
             return
-        _save(runtime, task, loaded, results)
+        _save(runtime, current, loaded, results)
     except Exception as exc:
         message = exc.message if isinstance(exc, AppError) else str(exc)
         log.exception("task %s failed", task_id)
-        runtime.store.update("tasks", task_id, status="failed", error=message[:500])
+        _update_task(runtime, task_id, status="failed", error=message[:500])
 
 
 def drain(runtime, queues=("intake", "gen"), limit: int = 100) -> int:
@@ -117,8 +115,8 @@ def fail_orphans(runtime) -> int:
     """
     rows = runtime.store.query("tasks", status="running")
     for task in rows:
-        runtime.store.update(
-            "tasks", task["id"], status="failed",
+        _update_task(
+            runtime, task["id"], status="failed",
             error="Orchestrator restarted while the task was running",
         )
     if rows:
@@ -191,16 +189,11 @@ def _save(runtime, task, loaded, results) -> None:
     shape = runtime.store.get("shapes", task["shape_id"]) if task.get("shape_id") else None
     if shape and shape.get("kind") == "circle":
         image = circle_mask(image)
-    project = runtime.store.get("projects", task["project_id"])
-    if project is None or project.get("deleted_at"):
-        _invalidate(runtime, task, "Project deleted")
+    if _release(runtime, task):
         return
     key = f"{task['user_id']}/tasks/{task['id']}.png"
     runtime.blobs.put(key, png_bytes(image))
-    project = runtime.store.get("projects", task["project_id"])
-    if project is None or project.get("deleted_at"):
-        runtime.blobs.delete(key)
-        _invalidate(runtime, task, "Project deleted")
+    if _release(runtime, task, key):
         return
     variant_id = str(uuid.uuid4())
     runtime.store.insert("variants", {
@@ -220,8 +213,32 @@ def _save(runtime, task, loaded, results) -> None:
         "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     })
     progress = {"stage": 10, "total": 10, "name": "done"} if task.get("provider_kind") == "qwen" else None
+    if runtime.store.get("tasks", task["id"]) is None:
+        runtime.store.delete("variants", variant_id)
+        runtime.blobs.delete(key)
+        return
     runtime.store.update("tasks", task["id"], status="done", result_url=f"/api/media/{key}", progress=progress)
 
 
-def _invalidate(runtime, task, message: str) -> None:
-    runtime.store.update("tasks", task["id"], status="invalidated", error=message)
+def _release(runtime, task, *extra_keys) -> bool:
+    """Discard the task when its project or shape is gone.
+
+    Returns True when the caller must stop. A row that is already gone was
+    discarded elsewhere: only ``extra_keys`` (the blob just written) are removed.
+    """
+    current = runtime.store.get("tasks", task["id"])
+    if current is None:
+        for key in extra_keys:
+            if key:
+                runtime.blobs.delete(key)
+        return True
+    if not owner_gone(runtime, current):
+        return False
+    discard_task(runtime, current, extra_keys=extra_keys)
+    return True
+
+
+def _update_task(runtime, task_id: str, **fields) -> None:
+    if runtime.store.get("tasks", task_id) is None:
+        return
+    runtime.store.update("tasks", task_id, **fields)

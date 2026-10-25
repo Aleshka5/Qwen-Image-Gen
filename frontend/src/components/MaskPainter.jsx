@@ -1,11 +1,14 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 
-const MaskPainter = forwardRef(function MaskPainter({ imageUrl, active }, ref) {
+const MaskPainter = forwardRef(function MaskPainter({ imageUrl, active, maskUrl = '' }, ref) {
   const imgRef = useRef(null);
   const maskRef = useRef(null);
   const overRef = useRef(null);
   const drawing = useRef(null);
   const history = useRef([]);
+  const seenImage = useRef(null);
+  const storedMask = useRef('');
+  const maskReady = useRef(false);
   const [tool, setTool] = useState('brush');
   const [size, setSize] = useState(36);
   const [ready, setReady] = useState(false);
@@ -43,6 +46,11 @@ const MaskPainter = forwardRef(function MaskPainter({ imageUrl, active }, ref) {
     const mask = maskRef.current;
     const over = overRef.current;
     if (!img || !mask || !over || !img.naturalWidth) return;
+    const url = maskUrl || '';
+    if (url && storedMask.current === url) {
+      if (maskReady.current) setReady(true);
+      return;
+    }
     mask.width = img.naturalWidth;
     mask.height = img.naturalHeight;
     over.width = img.naturalWidth;
@@ -51,11 +59,35 @@ const MaskPainter = forwardRef(function MaskPainter({ imageUrl, active }, ref) {
     mask.getContext('2d').fillRect(0, 0, mask.width, mask.height);
     over.getContext('2d').clearRect(0, 0, over.width, over.height);
     history.current = [];
-    setReady(true);
+    if (!url) {
+      setReady(true);
+      return;
+    }
+    storedMask.current = url;
+    maskReady.current = false;
+    const image = new Image();
+    image.onload = () => {
+      const canvas = maskRef.current;
+      if (!canvas || storedMask.current !== url) return;
+      canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+      rebuildOverlay();
+      maskReady.current = true;
+      setReady(true);
+    };
+    image.onerror = () => {
+      if (storedMask.current === url) setReady(true);
+    };
+    image.src = url;
   }
 
   useEffect(() => {
+    if (seenImage.current === imageUrl) return;
+    seenImage.current = imageUrl;
     setReady(false);
+    storedMask.current = '';
+    maskReady.current = false;
+    const img = imgRef.current;
+    if (img?.complete && img.naturalWidth) prepare();
   }, [imageUrl]);
 
   function point(event) {

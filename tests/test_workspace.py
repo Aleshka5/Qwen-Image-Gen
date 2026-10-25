@@ -12,6 +12,7 @@ from app.config import settings
 from qimg.runtime import Runtime, build_runtime
 from qimg.service import Service
 from qimg.store import MemoryBlobs, MemoryQueue, MemoryStore
+from qimg.tasks import discard_task
 from qimg.workers import drain
 
 USER = "11111111-1111-4111-8111-111111111111"
@@ -267,7 +268,7 @@ def test_generation_order_reuse_progress_circle_and_render(client, app):
     assert client.get(done["result_url"], headers={"X-Auth-User-Id": OTHER}).status_code == 404
 
 
-def test_delete_invalidates_queued_work_and_a_result_saved_mid_flight(client, app):
+def test_delete_removes_queued_work_and_a_result_saved_mid_flight(client, app):
     created = client.post(
         "/api/projects",
         data={"kind": "scratch"},
@@ -285,13 +286,21 @@ def test_delete_invalidates_queued_work_and_a_result_saved_mid_flight(client, ap
         "aspect": "1:1",
         "copies": "1",
         "seed": "3",
+        "images": _file(_png((9, 9, 9), size=(16, 16)), "ref.png"),
     }, headers=AUTH)
     assert queued.status_code == 200, queued.data
     task_id = _json(queued)["tasks"][0]["id"]
+    runtime = app.extensions["qimg"]
+    stored = runtime.store.get("tasks", task_id)
+    artifact_keys = [item["key"] for item in stored["artifacts"]]
+    assert artifact_keys
     assert client.delete(f"/api/projects/{project_id}", headers=AUTH).status_code == 200
-    assert app.extensions["qimg"].store.get("tasks", task_id)["status"] == "invalidated"
-    assert drain(app.extensions["qimg"]) >= 1
-    assert app.extensions["qimg"].store.get("tasks", task_id)["status"] == "invalidated"
+    assert runtime.store.get("tasks", task_id) is None
+    for key in artifact_keys:
+        assert runtime.blobs.get(key) is None
+    assert drain(runtime) >= 1
+    assert runtime.store.get("tasks", task_id) is None
+    assert runtime.blobs.get(f"{USER}/tasks/{task_id}.png") is None
 
     live = client.post("/api/projects", data={"kind": "scratch"}, headers=AUTH)
     live_id = _json(live)["id"]
@@ -308,7 +317,6 @@ def test_delete_invalidates_queued_work_and_a_result_saved_mid_flight(client, ap
         "seed": "9",
     }, headers=AUTH)
     flying = _json(started)["tasks"][0]["id"]
-    runtime = app.extensions["qimg"]
 
     def dispatch(job, images, on_progress, provider, secret):
         return [Image.new("RGB", (32, 32), (0, 180, 0))]
@@ -323,9 +331,159 @@ def test_delete_invalidates_queued_work_and_a_result_saved_mid_flight(client, ap
     runtime.dispatch = dispatch
     runtime.blobs.put = put
     drain(runtime)
-    finished = runtime.store.get("tasks", flying)
-    assert finished["status"] == "invalidated"
+    assert runtime.store.get("tasks", flying) is None
     assert runtime.blobs.get(f"{USER}/tasks/{flying}.png") is None
+    assert runtime.store.query("variants", task_id=flying) == []
+
+
+def test_finished_mask_fill_task_refills_the_form(client, app):
+    created = client.post(
+        "/api/projects",
+        data={"kind": "photo", "file": _file(_png(size=(100, 100)), "room.png")},
+        headers=AUTH,
+    )
+    project_id = _json(created)["id"]
+    parent = _json(client.post(
+        f"/api/projects/{project_id}/shapes",
+        json={"kind": "rect", "x": 0.0, "y": 0.0, "w": 0.8, "h": 0.8},
+        headers=AUTH,
+    ))
+    client.post(f"/api/projects/{project_id}/commit", json={"parent_id": None}, headers=AUTH)
+    circle = _json(client.post(
+        f"/api/projects/{project_id}/shapes",
+        json={"parent_id": parent["id"], "kind": "circle", "x": 0.1, "y": 0.1, "w": 0.5, "h": 0.5},
+        headers=AUTH,
+    ))
+    mask_size = _crop_size(app, project_id, circle["id"])
+    mask_bytes = _png((255, 255, 255), size=mask_size)
+    first_ref = _png((1, 2, 3), size=(16, 16))
+    second_ref = _png((4, 5, 6), size=(16, 16))
+    submitted = client.post("/api/generations", data={
+        "project_id": project_id,
+        "shape_id": circle["id"],
+        "mode": "mask_fill",
+        "provider_id": "local",
+        "model": "qwen-image-2.1",
+        "prompt": "A red apple on the table",
+        "negative_prompt": "blurry, watermark",
+        "steps": "4",
+        "true_cfg_scale": "2.5",
+        "copies": "1",
+        "seed": "7",
+        "mask": _file(mask_bytes, "mask.png"),
+        "images": [
+            _file(first_ref, "one.png"),
+            _file(second_ref, "two.png"),
+        ],
+    }, headers=AUTH)
+    assert submitted.status_code == 200, submitted.data
+    task_id = _json(submitted)["tasks"][0]["id"]
+    runtime = app.extensions["qimg"]
+
+    def dispatch(job, images, on_progress, provider, secret):
+        on_progress({"stage": 4, "total": 10, "name": "denoise"})
+        return [Image.new("RGB", (9, 9), (220, 10, 10))]
+
+    runtime.dispatch = dispatch
+    assert drain(runtime) == 2
+    done = _json(client.get(f"/api/tasks/{task_id}", headers=AUTH))
+    assert done["status"] == "done"
+    width, height = mask_size
+    assert done["provider_id"] == "local"
+    assert done["negative_prompt"] == "blurry, watermark"
+    assert done["steps"] == 4
+    assert done["true_cfg_scale"] == 2.5
+    assert done["width"] == width
+    assert done["height"] == height
+    assert done["copies"] == 1
+    assert done["seed"] == 7
+    mask = client.get(done["mask_url"], headers=AUTH)
+    assert mask.status_code == 200
+    assert len(done["references"]) == 2
+    colors = []
+    for item in done["references"]:
+        response = client.get(item["url"], headers=AUTH)
+        assert response.status_code == 200
+        colors.append(Image.open(io.BytesIO(response.data)).getpixel((0, 0))[:3])
+    assert colors == [(1, 2, 3), (4, 5, 6)]
+    stored = runtime.store.get("tasks", task_id)
+    source_key = next(item["key"] for item in stored["artifacts"] if item["role"] == "source")
+    assert f"/api/media/{source_key}" not in [item["url"] for item in done["references"]]
+    feed = _json(client.get("/api/feed", headers=AUTH))
+    listed = next(item for item in feed["tasks"] if item["id"] == task_id)
+    assert listed == done
+
+
+def test_delete_shape_removes_its_task_from_the_feed(client, app):
+    created = client.post(
+        "/api/projects",
+        data={"kind": "photo", "file": _file(_png(size=(100, 100)), "room.png")},
+        headers=AUTH,
+    )
+    project_id = _json(created)["id"]
+    parent = _json(client.post(
+        f"/api/projects/{project_id}/shapes",
+        json={"kind": "rect", "x": 0.0, "y": 0.0, "w": 0.8, "h": 0.8},
+        headers=AUTH,
+    ))
+    assert client.post(
+        f"/api/projects/{project_id}/commit", json={"parent_id": None}, headers=AUTH,
+    ).status_code == 200
+    child = _json(client.post(
+        f"/api/projects/{project_id}/shapes",
+        json={"parent_id": parent["id"], "kind": "rect", "x": 0.1, "y": 0.1, "w": 0.5, "h": 0.5},
+        headers=AUTH,
+    ))
+    queued = client.post("/api/generations", data={
+        "project_id": project_id,
+        "shape_id": child["id"],
+        "mode": "customize",
+        "provider_id": "local",
+        "model": "qwen-image-2.1",
+        "prompt": "A red apple on the table",
+        "steps": "4",
+        "true_cfg_scale": "1",
+        "copies": "1",
+        "seed": "7",
+    }, headers=AUTH)
+    assert queued.status_code == 200, queued.data
+    task_id = _json(queued)["tasks"][0]["id"]
+    assert client.delete(f"/api/shapes/{child['id']}", headers=AUTH).status_code == 200
+    assert app.extensions["qimg"].store.get("tasks", task_id) is None
+    feed = _json(client.get("/api/feed", headers=AUTH))
+    assert task_id not in {item["id"] for item in feed["tasks"]}
+
+
+def test_shared_artifact_survives_until_the_last_task_is_discarded():
+    store = MemoryStore()
+    blobs = MemoryBlobs()
+    runtime = Runtime(store, blobs, MemoryQueue())
+    shared = f"{USER}/batches/batch/0.png"
+    only_first = f"{USER}/batches/batch/1.png"
+    blobs.put(shared, b"shared")
+    blobs.put(only_first, b"only-first")
+    shared_artifact = {"role": "source", "key": shared, "position": 0}
+    store.insert("tasks", {
+        "id": "task-1",
+        "user_id": USER,
+        "project_id": "project-1",
+        "artifacts": [shared_artifact, {"role": "reference", "key": only_first, "position": 1}],
+        "result_url": None,
+    })
+    store.insert("tasks", {
+        "id": "task-2",
+        "user_id": USER,
+        "project_id": "project-1",
+        "artifacts": [shared_artifact],
+        "result_url": None,
+    })
+    discard_task(runtime, store.get("tasks", "task-1"))
+    assert store.get("tasks", "task-1") is None
+    assert blobs.get(shared) is not None
+    assert blobs.get(only_first) is None
+    discard_task(runtime, store.get("tasks", "task-2"))
+    assert store.get("tasks", "task-2") is None
+    assert blobs.get(shared) is None
 
 
 def test_provider_secret_is_write_only(client):

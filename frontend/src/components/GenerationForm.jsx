@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, asList } from '../api';
 import { CYRILLIC, acceptsImages, modelsForMode, taskStatusText, withConfig } from '../model';
 import { useWorkspace } from '../workspace';
 import ReferenceList from './ReferenceList';
 
-export default function GenerationForm({ mode, projectId, shapeId, showSize, maskRef }) {
+export default function GenerationForm({ mode, projectId, shapeId, showSize, maskRef, preset = null }) {
   const { config, catalog, settings, notify, watchTasks, feed, push } = useWorkspace();
   const cfg = withConfig(config);
   const enabled = useMemo(
@@ -30,11 +30,14 @@ export default function GenerationForm({ mode, projectId, shapeId, showSize, mas
   const [error, setError] = useState('');
   const [note, setNote] = useState('');
   const [runIds, setRunIds] = useState([]);
+  const appliedPreset = useRef(false);
 
   useEffect(() => {
+    if (appliedPreset.current) return;
+    if (preset && preset.steps != null && preset.true_cfg_scale != null) return;
     setSteps(cfg.default_steps);
     setCfgScale(cfg.default_cfg);
-  }, [cfg.default_steps, cfg.default_cfg]);
+  }, [cfg.default_steps, cfg.default_cfg, preset]);
 
   useEffect(() => {
     if (providerId && enabled.some((provider) => provider.id === providerId)) return;
@@ -50,6 +53,31 @@ export default function GenerationForm({ mode, projectId, shapeId, showSize, mas
     if (currentModel) return;
     setModel(models[0]?.id || '');
   }, [models, currentModel]);
+
+  useEffect(() => {
+    if (!preset || appliedPreset.current) return undefined;
+    appliedPreset.current = true;
+    setPrompt(preset.prompt ?? '');
+    setNegative(preset.negative_prompt ?? '');
+    if (preset.steps != null) setSteps(preset.steps);
+    if (preset.true_cfg_scale != null) setCfgScale(preset.true_cfg_scale);
+    if (preset.seed != null) setSeed(String(preset.seed));
+    if (preset.copies != null) setCopies(preset.copies);
+    if (preset.provider_id) setProviderId(preset.provider_id);
+    if (preset.model) setModel(preset.model);
+    if (showSize) {
+      setSizeMode('custom');
+      if (preset.width != null) setWidth(preset.width);
+      if (preset.height != null) setHeight(preset.height);
+    }
+    const references = Array.isArray(preset.references) ? preset.references : [];
+    if (!references.length) return undefined;
+    referenceFiles(references).then((items) => {
+      if (!items.length) return;
+      setFiles((current) => [...items, ...current]);
+    });
+    return undefined;
+  }, [preset, showSize]);
 
   const showRefs = acceptsImages(currentModel);
   const copiesTooMany = Number(copies) > 1;
@@ -311,6 +339,29 @@ export default function GenerationForm({ mode, projectId, shapeId, showSize, mas
       ) : null}
     </form>
   );
+}
+
+async function referenceFiles(references) {
+  const loaded = [];
+  for (let index = 0; index < references.length; index += 1) {
+    const url = references[index]?.url;
+    if (!url) continue;
+    try {
+      const response = await fetch(url, { credentials: 'same-origin' });
+      if (!response.ok) continue;
+      const blob = await response.blob();
+      const name = `reference-${loaded.length + 1}.png`;
+      const file = new File([blob], name, { type: blob.type || 'image/png' });
+      loaded.push({
+        id: `${name}-${file.size}-${index}-${Math.random().toString(36).slice(2, 7)}`,
+        file,
+        url: URL.createObjectURL(file),
+      });
+    } catch {
+      /* Skip a reference that did not load. */
+    }
+  }
+  return loaded;
 }
 
 function clampInt(value, min, max) {

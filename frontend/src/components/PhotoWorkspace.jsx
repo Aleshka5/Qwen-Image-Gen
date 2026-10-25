@@ -4,16 +4,25 @@ import { useWorkspace } from '../workspace';
 import GenerationForm from './GenerationForm';
 import MaskPainter from './MaskPainter';
 
-export default function PhotoWorkspace({ projectId, shapeId }) {
+function initialPhotoMode(mode) {
+  return mode === 'mask_fill' || mode === 'customize' ? mode : 'customize';
+}
+
+export default function PhotoWorkspace({ projectId, shapeId, preset = null, mode: initialMode }) {
   const { openObject } = useWorkspace();
-  const [mode, setMode] = useState('customize');
+  const [mode, setMode] = useState(() => initialPhotoMode(initialMode ?? preset?.mode));
   const maskRef = useRef(null);
 
   return (
     <div className="view-frame">
       <div className="view-body">
         <div className="sheet sheet-wide">
-          <MaskPainter ref={maskRef} imageUrl={shapeSource(shapeId, false)} active={mode === 'mask_fill'} />
+          <MaskPainter
+            ref={maskRef}
+            imageUrl={shapeSource(shapeId, false)}
+            active={mode === 'mask_fill'}
+            maskUrl={preset?.mask_url || ''}
+          />
           <div className="segment" role="group" aria-label="Edit mode">
             <button type="button" aria-pressed={mode === 'customize'} onClick={() => setMode('customize')}>
               Customisation
@@ -29,7 +38,7 @@ export default function PhotoWorkspace({ projectId, shapeId }) {
           >
             Choose another variant
           </button>
-          <GenerationForm mode={mode} projectId={projectId} shapeId={shapeId} maskRef={maskRef} />
+          <GenerationForm mode={mode} projectId={projectId} shapeId={shapeId} maskRef={maskRef} preset={preset} />
         </div>
       </div>
     </div>

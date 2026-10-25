@@ -27,6 +27,9 @@ class MongoStore:
         self._db[collection].update_one({"_id": doc_id}, {"$set": fields})
         return self.get(collection, doc_id)
 
+    def delete(self, collection: str, doc_id: str) -> None:
+        self._db[collection].delete_one({"_id": doc_id})
+
     def claim(self, collection: str, doc_id: str, expect: str, **fields) -> bool:
         result = self._db[collection].update_one(
             {"_id": doc_id, "status": expect},

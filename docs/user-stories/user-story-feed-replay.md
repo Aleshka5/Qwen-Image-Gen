@@ -1,6 +1,6 @@
 # User story: open a generation again from the Feed
 
-**Status:** to implement.
+**Status:** implemented in this repository.
 
 **Actor:** a household member who already passed the Auth Gateway on `https://image.filenkov.store`.
 

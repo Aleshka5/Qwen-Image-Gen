@@ -1,7 +1,7 @@
 import { useWorkspace } from '../workspace';
 import GenerationForm from './GenerationForm';
 
-export default function GenerateWorkspace({ projectId }) {
+export default function GenerateWorkspace({ projectId, preset = null }) {
   const { openObject } = useWorkspace();
   return (
     <div className="view-frame">
@@ -15,7 +15,7 @@ export default function GenerateWorkspace({ projectId }) {
           >
             Choose another variant
           </button>
-          <GenerationForm mode="generate" projectId={projectId} showSize />
+          <GenerationForm mode="generate" projectId={projectId} showSize preset={preset} />
         </div>
       </div>
     </div>

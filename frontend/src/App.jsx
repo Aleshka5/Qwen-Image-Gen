@@ -296,6 +296,23 @@ export default function App() {
     setRightOpen(true);
   }, []);
 
+  const openFromFeed = useCallback((task) => {
+    if (!task) return;
+    if (task.mode === 'generate' || !task.shape_id) {
+      push({ type: 'generate', projectId: task.project_id, preset: task });
+    } else {
+      push({
+        type: 'photo',
+        projectId: task.project_id,
+        shapeId: task.shape_id,
+        preset: task,
+        mode: task.mode,
+      });
+    }
+    setRightTab('feed');
+    if (!window.matchMedia(NARROW).matches) setRightOpen(true);
+  }, [push]);
+
   const value = useMemo(() => ({
     config,
     catalog,
@@ -328,13 +345,14 @@ export default function App() {
     watchTasks,
     bumpVariants,
     openObject,
+    openFromFeed,
     renderShot,
     loadAll,
   }), [
     config, catalog, settings, projects, feed, stack, narrow, leftOpen, rightOpen, rightTab,
     objectTarget, booting, bootError, variantEpoch, rendering, notify, push, pop, resetHome,
     openProject, replaceProject, removeProject, refreshProjects, refreshSettings, confirm,
-    watchTasks, bumpVariants, openObject, renderShot, loadAll,
+    watchTasks, bumpVariants, openObject, openFromFeed, renderShot, loadAll,
   ]);
 
   return (
@@ -378,9 +396,18 @@ function renderView(view, { visible }) {
   if (view.type === 'editor') {
     return <StageEditor projectId={view.projectId} parentId={view.parentId || null} visible={visible} />;
   }
-  if (view.type === 'photo') return <PhotoWorkspace projectId={view.projectId} shapeId={view.shapeId} />;
+  if (view.type === 'photo') {
+    return (
+      <PhotoWorkspace
+        projectId={view.projectId}
+        shapeId={view.shapeId}
+        preset={view.preset}
+        mode={view.mode}
+      />
+    );
+  }
   if (view.type === 'text') return <TextWorkspace projectId={view.projectId} shapeId={view.shapeId} />;
-  if (view.type === 'generate') return <GenerateWorkspace projectId={view.projectId} />;
+  if (view.type === 'generate') return <GenerateWorkspace projectId={view.projectId} preset={view.preset} />;
   return null;
 }
 

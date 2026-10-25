@@ -28,6 +28,10 @@ class MemoryStore:
             doc.update(fields)
             return copy.deepcopy(doc)
 
+    def delete(self, collection: str, doc_id: str) -> None:
+        with self._lock:
+            self._docs[collection].pop(doc_id, None)
+
     def claim(self, collection: str, doc_id: str, expect: str, **fields) -> bool:
         with self._lock:
             doc = self._docs[collection].get(doc_id)
