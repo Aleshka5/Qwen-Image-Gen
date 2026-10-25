@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
-export default function ContextMenu({ x, y, onClose, children, label }) {
+export default function ContextMenu({ x, y, onClose, children, label, anchor = 'top-left' }) {
   const ref = useRef(null);
   const [pos, setPos] = useState({ left: x, top: y, ready: false });
 
@@ -9,9 +9,9 @@ export default function ContextMenu({ x, y, onClose, children, label }) {
     const node = ref.current;
     if (!node) return;
     const rect = node.getBoundingClientRect();
-    let left = x;
-    let top = y;
     const margin = 8;
+    let left = anchor === 'top-right' ? x - rect.width : x;
+    let top = y;
     if (left + rect.width > window.innerWidth - margin) {
       left = Math.max(margin, window.innerWidth - rect.width - margin);
     }
@@ -21,7 +21,7 @@ export default function ContextMenu({ x, y, onClose, children, label }) {
     if (left < margin) left = margin;
     if (top < margin) top = margin;
     setPos({ left, top, ready: true });
-  }, [x, y, children]);
+  }, [x, y, children, anchor]);
 
   useEffect(() => {
     function onKey(event) {
